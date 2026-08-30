@@ -7,8 +7,18 @@ const { NETWORK_CTL_SCRIPT } = require('./paths');
 
 const SUDOERS_FILE = '/etc/sudoers.d/90-winapps-manager-network';
 
+// A libvirt network's subnet essentially never changes after it's created,
+// so there's no reason to re-fetch it on every 5s status poll - each fetch
+// is its own `virsh` process, and each new `virsh` process opens a fresh
+// (polkit-gated) connection to libvirtd, i.e. another authorization check
+// every tick for a value that was never going to be different. Cached per
+// network name; cleared automatically if a lookup ever fails, so a genuine
+// change (or the network not existing yet) still gets picked up.
+const cidrCache = new Map();
+
 /** Reads the <ip address=".." netmask=".."/> of a libvirt network and returns CIDR, e.g. 192.168.122.0/24. */
 async function getNetworkCidr(networkName = 'default') {
+  if (cidrCache.has(networkName)) return cidrCache.get(networkName);
   const { stdout } = await run('virsh', ['net-dumpxml', networkName]);
   const m = stdout.match(/<ip address='([^']+)'\s+netmask='([^']+)'/) ||
     stdout.match(/<ip address="([^"]+)"\s+netmask="([^"]+)"/);
@@ -17,7 +27,9 @@ async function getNetworkCidr(networkName = 'default') {
   const cidr = netmaskToCidr(mask);
   const network = addr.split('.').map(Number);
   network[3] = 0; // assume the doc's typical /24; good enough for the default NAT network
-  return `${network.join('.')}/${cidr}`;
+  const result = `${network.join('.')}/${cidr}`;
+  cidrCache.set(networkName, result);
+  return result;
 }
 
 function netmaskToCidr(mask) {

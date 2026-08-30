@@ -3,16 +3,15 @@ const os = require('os');
 const path = require('path');
 const fs = require('fs');
 const { run } = require('./exec');
+const { listVmStates } = require('./vmStats');
 
+// One `virsh domstats` call covers every domain's name + state at once,
+// instead of `virsh list` plus a separate `virsh domstate` per VM. Each of
+// those used to be its own virsh process, and each new virsh process opens
+// a fresh (polkit-gated) connection to libvirtd - on the dashboard's 5s
+// poll, that meant one polkit authorization per VM every 5 seconds, forever.
 async function listVms() {
-  const { stdout } = await run('virsh', ['list', '--all', '--name']);
-  const names = stdout.split('\n').map((s) => s.trim()).filter(Boolean);
-  const vms = [];
-  for (const name of names) {
-    const { stdout: state } = await run('virsh', ['domstate', name], { allowFail: true });
-    vms.push({ name, state: state.trim() });
-  }
-  return vms;
+  return listVmStates();
 }
 
 // Equivalent to: alias winvm-start="virsh start RDPWindows"
