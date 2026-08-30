@@ -402,6 +402,17 @@ async function refreshVmDetailsData(vmName, { full }) {
       entry.guestError = e.message;
     }
     entry.guestAt = Date.now();
+    try {
+      // PCI/IOMMU topology and what's attached to this VM's definition
+      // don't change on their own between ticks (only a user action - or a
+      // hardware change - moves them), so this belongs in the same
+      // once-per-expand tier as config/guestStatus above, never the 5s
+      // auto-refresh that only touches live stats.
+      entry.gpu = await window.api.gpu.overview(vmName);
+      entry.gpuError = null;
+    } catch (e) {
+      entry.gpuError = e.message;
+    }
   }
 }
 
@@ -584,7 +595,146 @@ function renderVmDetails(vm) {
     guestBox.appendChild(h('div', { class: 'sub' }, 'Loading...'));
   }
 
+  // --- GPU passthrough ---
+  panel.appendChild(renderGpuBox(vm, entry));
+
   return panel;
+}
+
+/**
+ * GPU passthrough box: detected host GPUs, IOMMU status, and per-GPU
+ * attach/detach with a hot-swap-or-not verdict from the backend. Data
+ * comes from the same `full`-tier fetch as config/guestStatus above (see
+ * refreshVmDetailsData) - never the 5s tick - since PCI/IOMMU topology is
+ * static between user actions.
+ */
+function renderGpuBox(vm, entry) {
+  const box = h('div', { style: 'margin-top:16px' });
+  box.appendChild(h('h3', {}, 'GPU passthrough'));
+
+  if (entry.gpuError) {
+    box.appendChild(h('div', { class: 'sub' }, 'Could not detect GPUs: ' + entry.gpuError));
+    return box;
+  }
+  if (!entry.gpu) {
+    box.appendChild(h('div', { class: 'sub' }, 'Loading...'));
+    return box;
+  }
+  if (entry.gpu.error) {
+    box.appendChild(h('div', { class: 'sub' }, entry.gpu.error));
+    return box;
+  }
+
+  const { gpus, iommu } = entry.gpu;
+
+  const iommuRow = h('div', { class: 'row', style: 'margin-bottom:10px' }, [
+    h('span', { class: 'badge ' + (iommu.active ? 'ok' : 'warn') }, iommu.active ? 'IOMMU active' : 'IOMMU not active'),
+    h('span', { class: 'sub', style: 'margin:0' },
+      iommu.active
+        ? 'Passthrough (hot, where the checks below allow it) is available.'
+        : `Needs "${iommu.recommendedFlag}" on the kernel command line, then a reboot - there is no way to turn this on without one, it's a boot-time CPU/chipset feature.`)
+  ]);
+  if (!iommu.active) {
+    iommuRow.appendChild(h('button', {
+      class: 'btn small',
+      onclick: async (ev) => {
+        ev.target.disabled = true;
+        try {
+          const res = await window.api.gpu.enableIommu(iommu);
+          toast(res.note + (res.needsReboot ? ' Reboot when convenient.' : ''));
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          ev.target.disabled = false;
+        }
+      }
+    }, 'Enable IOMMU (needs reboot)'));
+  }
+  box.appendChild(iommuRow);
+
+  if (!gpus.length) {
+    box.appendChild(h('div', { class: 'sub' }, 'No VGA/3D-controller PCI devices detected.'));
+    return box;
+  }
+
+  const dGpus = gpus.filter((g) => !g.bootVga);
+  const hasIntegratedFallback = gpus.length > 1;
+  if (dGpus.length && hasIntegratedFallback) {
+    box.appendChild(h('div', { class: 'sub' },
+      'This host has more than one GPU. For simultaneous use, the practical option with normal consumer hardware is dedicating one GPU to the VM while the host desktop stays on the other (e.g. keep the host on the integrated GPU, pass the discrete one through) - that\u2019s two GPUs each fully usable at once, not one GPU shared. True single-GPU sharing (one physical GPU driving both host and VM at the same time) needs SR-IOV hardware/driver support, called out per-GPU below when detected.'));
+  }
+
+  const list = h('div', { class: 'check-list' });
+  for (const gpu of gpus) {
+    list.appendChild(renderGpuRow(vm, gpu));
+  }
+  box.appendChild(list);
+  return box;
+}
+
+function renderGpuRow(vm, gpu) {
+  const isAttached = gpu.attachedToThisVm;
+  const canHot = gpu.hotSwap.ok;
+
+  const item = h('div', { class: 'check-item', style: 'flex-direction:column; align-items:stretch; gap:6px' });
+  item.appendChild(h('div', { class: 'row', style: 'justify-content:space-between' }, [
+    h('div', {}, [
+      h('div', { class: 'label' }, `${gpu.vendorName} ${gpu.deviceName}${gpu.bootVga ? ' (driving host display)' : ''}`),
+      h('div', { class: 'detail' }, `${gpu.address} · driver: ${gpu.driver || 'none bound'} · IOMMU group ${gpu.iommuGroup ?? '—'}${gpu.siblingFunctions.length ? ` · +${gpu.siblingFunctions.length} sibling function(s) (audio, etc.) included automatically` : ''}`)
+    ]),
+    h('div', { class: 'row' }, [
+      h('span', { class: 'badge ' + (isAttached ? 'ok' : '') }, isAttached ? `attached to ${vm.name}` : 'not attached'),
+      h('span', { class: 'badge ' + (canHot ? 'ok' : 'warn') }, canHot ? 'hot-swappable' : 'reboot/relog needed'),
+      h('button', {
+        class: 'btn small',
+        onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            if (isAttached) {
+              await window.api.gpu.detach(vm.name, gpu, { live: canHot });
+              toast(`Detached ${gpu.deviceName} from ${vm.name}${canHot ? '' : ' (VM must be restarted for this to take effect)'}.`);
+            } else {
+              await window.api.gpu.attach(vm.name, gpu, { live: canHot });
+              toast(`Attached ${gpu.deviceName} to ${vm.name}${canHot ? '' : ' (start/restart the VM for this to take effect)'}.`);
+            }
+            await refreshVmDetailsData(vm.name, { full: true });
+            rerenderVmDetailsIfOpen(vm);
+          } catch (e) {
+            toast(e.message, true);
+          } finally {
+            ev.target.disabled = false;
+          }
+        }
+      }, isAttached ? 'Detach' : 'Attach')
+    ])
+  ]));
+  item.appendChild(h('div', { class: 'sub', style: 'margin:0' }, gpu.hotSwap.reason));
+
+  if (gpu.sriovTotalVfs) {
+    const vfInput = h('input', { type: 'number', value: gpu.sriovNumVfs || 0, min: '0', max: String(gpu.sriovTotalVfs), style: 'max-width:90px' });
+    item.appendChild(h('div', { class: 'row', style: 'margin-top:4px' }, [
+      h('span', { class: 'sub', style: 'margin:0' }, `SR-IOV supported (up to ${gpu.sriovTotalVfs} virtual functions) - this is the one way to have the host and a VM use this physical GPU at the same time, if this GPU's driver actually implements it (mostly data-center cards; a guest driver that recognizes the VF is also required). Currently: ${gpu.sriovNumVfs || 0}.`),
+      vfInput,
+      h('button', {
+        class: 'btn small',
+        onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            await window.api.gpu.setSriovNumVfs(gpu, Number(vfInput.value));
+            toast('SR-IOV virtual function count updated.');
+            await refreshVmDetailsData(vm.name, { full: true });
+            rerenderVmDetailsIfOpen(vm);
+          } catch (e) {
+            toast(e.message, true);
+          } finally {
+            ev.target.disabled = false;
+          }
+        }
+      }, 'Set VFs')
+    ]));
+  }
+
+  return item;
 }
 
 /* ------------------------------ WIZARD ------------------------------ */

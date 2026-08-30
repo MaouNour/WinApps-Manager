@@ -18,6 +18,7 @@ const winappsApps = require('../backend/winappsApps');
 const hostStats = require('../backend/hostStats');
 const appsCatalog = require('../backend/appsCatalog');
 const appsManage = require('../backend/appsManage');
+const gpuPassthrough = require('../backend/gpuPassthrough');
 
 // Without a real GPU driver behind the display (common when the host is
 // itself virtualized, or on some Wayland/Xorg + software-rendering setups),
@@ -244,3 +245,16 @@ ipcMain.handle('appsCatalog:detectMatches', async (_e, vmName) => {
   // different from a real scan that just has no catalog overlap.
   return { matched: [...matched], installedCount: installed.length };
 });
+
+// ---------- IPC: GPU passthrough (detection, IOMMU status, attach/detach,
+// hot-swap safety check, IOMMU cmdline enable, SR-IOV VF count). All of
+// this is only ever called on-demand from the VM Details panel (first
+// expand, or right after a button click) - see src/app.js's `full`-tier
+// fetch and the gpuPassthrough.js module comment - never from any 3s/5s
+// background poller, since PCI/IOMMU topology never changes on its own
+// between ticks. ----------
+ipcMain.handle('gpu:overview', (_e, vmName) => gpuPassthrough.getGpuOverview(vmName));
+ipcMain.handle('gpu:attach', (_e, vmName, gpu, opts) => gpuPassthrough.attachGpuToVm(vmName, gpu, opts));
+ipcMain.handle('gpu:detach', (_e, vmName, gpu, opts) => gpuPassthrough.detachGpuFromVm(vmName, gpu, opts));
+ipcMain.handle('gpu:enableIommu', (_e, iommuStatus) => gpuPassthrough.enableIommuCmdline(iommuStatus));
+ipcMain.handle('gpu:setSriovNumVfs', (_e, gpu, count) => gpuPassthrough.setSriovNumVfs(gpu, count));

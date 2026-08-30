@@ -85,5 +85,12 @@ contextBridge.exposeInMainWorld('api', {
     list: () => ipcRenderer.invoke('appsCatalog:list'),
     setEnabled: (slug, enabled) => ipcRenderer.invoke('appsCatalog:setEnabled', slug, enabled),
     detectMatches: (vmName) => ipcRenderer.invoke('appsCatalog:detectMatches', vmName)
+  },
+  gpu: {
+    overview: (vmName) => ipcRenderer.invoke('gpu:overview', vmName),
+    attach: (vmName, gpu, opts) => ipcRenderer.invoke('gpu:attach', vmName, gpu, opts),
+    detach: (vmName, gpu, opts) => ipcRenderer.invoke('gpu:detach', vmName, gpu, opts),
+    enableIommu: (iommuStatus) => ipcRenderer.invoke('gpu:enableIommu', iommuStatus),
+    setSriovNumVfs: (gpu, count) => ipcRenderer.invoke('gpu:setSriovNumVfs', gpu, count)
   }
 });
