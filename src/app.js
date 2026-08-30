@@ -329,7 +329,7 @@ function startDetailsAutoRefresh(vmName) {
   dash.statsTimers[vmName] = setInterval(async () => {
     await refreshVmDetailsData(vmName, { full: false });
     const vm = (dash.vms || []).find((v) => v.name === vmName);
-    if (vm) rerenderVmDetailsIfOpen(vm);
+    if (vm) updateLiveStatsIfOpen(vm);
   }, 5000);
 }
 
@@ -342,6 +342,8 @@ function stopDetailsAutoRefresh(vmName) {
 
 // Re-paints just the expanded details block for one VM in place, without
 // touching the rest of the dashboard (avoids losing focus/scroll position).
+// Used after a `full` fetch (open, or right after a button press) since
+// those are the only times config/guestStatus can have actually changed.
 function rerenderVmDetailsIfOpen(vm) {
   if (!dash.expanded.has(vm.name)) return;
   const rows = [...document.querySelectorAll('.vm-item')];
@@ -351,6 +353,19 @@ function rerenderVmDetailsIfOpen(vm) {
   if (!detailsArea) return;
   detailsArea.innerHTML = '';
   detailsArea.appendChild(renderVmDetails(vm));
+}
+
+// Cheap counterpart used by the 5s auto-refresh tick: swaps out only the
+// Live Stats box in place, leaving the Resources form and every Windows
+// Management row/button (and their listeners) untouched, since those never
+// change on this tick - config/guestStatus are only ever updated by a
+// `full` fetch (see refreshVmDetailsData below).
+function updateLiveStatsIfOpen(vm) {
+  if (!dash.expanded.has(vm.name)) return;
+  const box = document.getElementById(`livestats-${vm.name}`);
+  if (!box) return; // panel not actually in the DOM (shouldn't happen, but don't throw)
+  const entry = dash.details[vm.name] || {};
+  box.replaceWith(renderLiveStatsBox(vm, entry));
 }
 
 /**
@@ -397,12 +412,15 @@ async function refreshVmDetailsData(vmName, { full }) {
  * moment later via rerenderVmDetailsIfOpen()).
  * ---------------------------------------------------------------- */
 
-function renderVmDetails(vm) {
-  const panel = h('div', { class: 'card', style: 'background:var(--panel-2)' });
-  const entry = dash.details[vm.name] || {};
-
-  // --- Live stats (CPU / RAM / disk / network - always kept fresh while open) ---
-  const statsBox = h('div', { style: 'margin-bottom:16px' });
+/**
+ * Builds just the Live Stats box from cached data. Pulled out of
+ * renderVmDetails() so the 5s auto-refresh tick can rebuild only this box
+ * (see updateLiveStatsIfOpen below) instead of tearing down and recreating
+ * the Resources form and every Windows Management row/button on every
+ * tick, for numbers that didn't even change on those parts.
+ */
+function renderLiveStatsBox(vm, entry) {
+  const statsBox = h('div', { id: `livestats-${vm.name}`, style: 'margin-bottom:16px' });
   statsBox.appendChild(h('h3', {}, 'Live stats'));
   if (entry.stats) {
     const stats = entry.stats;
@@ -425,7 +443,15 @@ function renderVmDetails(vm) {
   } else {
     statsBox.appendChild(h('div', { class: 'sub' }, 'Loading...'));
   }
-  panel.appendChild(statsBox);
+  return statsBox;
+}
+
+function renderVmDetails(vm) {
+  const panel = h('div', { class: 'card', style: 'background:var(--panel-2)' });
+  const entry = dash.details[vm.name] || {};
+
+  // --- Live stats (CPU / RAM / disk / network - the only thing the 5s auto-refresh touches) ---
+  panel.appendChild(renderLiveStatsBox(vm, entry));
 
   // --- Resize compute/storage - values read live from libvirt, not just our own saved metadata ---
   const cfg = entry.config;
