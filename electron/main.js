@@ -16,6 +16,8 @@ const vmResize = require('../backend/vmResize');
 const guestControl = require('../backend/guestControl');
 const winappsApps = require('../backend/winappsApps');
 const hostStats = require('../backend/hostStats');
+const appsCatalog = require('../backend/appsCatalog');
+const appsManage = require('../backend/appsManage');
 
 // Without a real GPU driver behind the display (common when the host is
 // itself virtualized, or on some Wayland/Xorg + software-rendering setups),
@@ -182,3 +184,60 @@ ipcMain.handle('winappsApps:runDetection', async (event, scope) => {
 ipcMain.handle('winappsApps:list', () => winappsApps.listDetectedApps());
 ipcMain.handle('winappsApps:setEnabled', (_e, appId, enabled) => winappsApps.setAppEnabled(appId, enabled));
 ipcMain.handle('winappsApps:addManual', (_e, exePath) => winappsApps.addManualApp(exePath));
+
+// ---------- IPC: real WinApps app catalog (actual icons/metadata synced from
+// the winapps-org/winapps repo's apps/ directory) + direct enable/disable,
+// replacing the fragile "find installer.sh and hope its cache has an
+// icon.png" path above. This is what the Apps page actually uses now. ----------
+function iconToDataUri(iconPath) {
+  if (!iconPath || !fs.existsSync(iconPath)) return null;
+  try {
+    const ext = path.extname(iconPath).toLowerCase();
+    const mime = ext === '.svg' ? 'image/svg+xml' : ext === '.ico' ? 'image/x-icon' : 'image/png';
+    return `data:${mime};base64,${fs.readFileSync(iconPath).toString('base64')}`;
+  } catch (_) {
+    return null;
+  }
+}
+
+ipcMain.handle('appsCatalog:status', () => {
+  const manifest = appsCatalog.readManifest();
+  return manifest
+    ? { cached: true, count: manifest.apps.length, syncedAt: manifest.syncedAt }
+    : { cached: false, count: 0, syncedAt: null };
+});
+
+ipcMain.handle('appsCatalog:sync', async (event, force) => {
+  try {
+    const apps = await appsCatalog.syncCatalog((line) => event.sender.send('appsCatalog:syncLine', line), !!force);
+    return { ok: true, count: apps.length };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('appsCatalog:list', () => {
+  const catalog = appsCatalog.getCatalog();
+  if (!catalog) return [];
+  return catalog.map((app) => ({
+    slug: app.slug,
+    name: app.fullName || app.name,
+    categories: app.categories,
+    enabled: appsManage.isAppEnabled(app.slug),
+    iconDataUri: iconToDataUri(app.iconPath)
+  }));
+});
+
+ipcMain.handle('appsCatalog:setEnabled', async (_e, slug, enabled) => {
+  const catalog = appsCatalog.getCatalog() || [];
+  const app = catalog.find((a) => a.slug === slug);
+  if (!app) throw new Error(`Unknown app '${slug}' - try re-syncing the catalog.`);
+  return appsManage.setAppEnabled(app, enabled);
+});
+
+ipcMain.handle('appsCatalog:detectMatches', async (_e, vmName) => {
+  const catalog = appsCatalog.getCatalog() || [];
+  const installed = await appsScan.scanInstalledApps(vmName);
+  const matched = appsManage.detectCatalogMatches(catalog, installed);
+  return [...matched];
+});

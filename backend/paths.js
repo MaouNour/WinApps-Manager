@@ -21,6 +21,17 @@ const VM_META_DIR = path.join(APP_DATA_DIR, 'vms'); // one JSON file per VM this
 const BIN_DIR = path.join(APP_DATA_DIR, 'bin'); // our own scripts get copied here so they have a stable, executable, sudoers-friendly path
 const LOG_FILE = path.join(APP_DATA_DIR, 'manager.log');
 
+// Real, offline app catalog synced once from winapps-org/winapps's own
+// apps/ directory (actual icons + metadata, not re-derived) - see
+// backend/appsCatalog.js / backend/appsManage.js.
+const APP_CATALOG_DIR = path.join(APP_DATA_DIR, 'app-catalog');
+const APP_CATALOG_MANIFEST = path.join(APP_CATALOG_DIR, 'manifest.json');
+// Where WinApps itself puts per-app launchers (do not change - real XDG path).
+const DESKTOP_ENTRIES_DIR = path.join(HOME, '.local', 'share', 'applications');
+// Where the `winapps` CLI and its generated per-app wrapper scripts live
+// (WinApps' own standard user-mode install location).
+const WINAPPS_BIN_DIR = path.join(HOME, '.local', 'bin');
+
 // Where the app ships its bundled scripts from (repo root in dev, or
 // process.resourcesPath once packaged - `electron .` runs this unpacked
 // either way, so both resolve to a real file on disk).
@@ -31,7 +42,7 @@ const BUNDLED_NETWORK_CTL_SCRIPT = path.join(RESOURCES_DIR, 'scripts', 'winapps-
 const NETWORK_CTL_SCRIPT = path.join(BIN_DIR, 'winapps-ctl.sh');
 
 function ensureDirs() {
-  for (const d of [APP_DATA_DIR, VM_IMAGES_DIR, SEED_ISO_DIR, DOWNLOADS_DIR, VM_META_DIR, BIN_DIR, WINAPPS_CONF_DIR]) {
+  for (const d of [APP_DATA_DIR, VM_IMAGES_DIR, SEED_ISO_DIR, DOWNLOADS_DIR, VM_META_DIR, BIN_DIR, WINAPPS_CONF_DIR, APP_CATALOG_DIR, DESKTOP_ENTRIES_DIR, WINAPPS_BIN_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
   // Keep the deployed copy of the control script in sync with the bundled
@@ -90,6 +101,10 @@ module.exports = {
   DOWNLOADS_DIR,
   VM_META_DIR,
   BIN_DIR,
+  APP_CATALOG_DIR,
+  APP_CATALOG_MANIFEST,
+  DESKTOP_ENTRIES_DIR,
+  WINAPPS_BIN_DIR,
   RESOURCES_DIR,
   BUNDLED_NETWORK_CTL_SCRIPT,
   NETWORK_CTL_SCRIPT,

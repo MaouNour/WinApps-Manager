@@ -190,3 +190,4 @@ input:focus, select:focus { outline: none; border-color: var(--accent); }
   gap: 4px;
 }
 .app-tile-toggle input { width: auto; margin: 0; }
+.app-tile-matched { border-color: var(--accent-2); box-shadow: 0 0 0 1px var(--accent-2) inset; }

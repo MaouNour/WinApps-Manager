@@ -73,5 +73,17 @@ contextBridge.exposeInMainWorld('api', {
     list: () => ipcRenderer.invoke('winappsApps:list'),
     setEnabled: (appId, enabled) => ipcRenderer.invoke('winappsApps:setEnabled', appId, enabled),
     addManual: (exePath) => ipcRenderer.invoke('winappsApps:addManual', exePath)
+  },
+  appsCatalog: {
+    status: () => ipcRenderer.invoke('appsCatalog:status'),
+    sync: (force) => ipcRenderer.invoke('appsCatalog:sync', force),
+    onSyncLine: (cb) => {
+      const listener = (_e, line) => cb(line);
+      ipcRenderer.on('appsCatalog:syncLine', listener);
+      return () => ipcRenderer.removeListener('appsCatalog:syncLine', listener);
+    },
+    list: () => ipcRenderer.invoke('appsCatalog:list'),
+    setEnabled: (slug, enabled) => ipcRenderer.invoke('appsCatalog:setEnabled', slug, enabled),
+    detectMatches: (vmName) => ipcRenderer.invoke('appsCatalog:detectMatches', vmName)
   }
 });

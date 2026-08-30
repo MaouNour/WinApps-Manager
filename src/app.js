@@ -618,9 +618,29 @@ function renderWizard(root) {
       h('h2', {}, 'VM identity'),
       field('VM name (must match winapps.conf VM_NAME)', textInput(state, 'name')),
       field('Windows edition', selectInput(state, 'osTargetHint', [
-        ['win11', 'Windows 11 (Pro/Enterprise)'],
-        ['win10', 'Windows 10 (Pro/Enterprise)']
-      ]))
+        ['win11', 'Windows 11 (Home/Pro/Education, retail ISO)'],
+        ['win10', 'Windows 10 (Home/Pro/Education, retail ISO)'],
+        ['win11-enterprise', 'Windows 11 Enterprise (90-day evaluation)'],
+        ['win10-enterprise', 'Windows 10 Enterprise (90-day evaluation)'],
+        ['win11-ltsc-iot', 'Windows 11 IoT Enterprise LTSC (evaluation)'],
+        ['win10-ltsc-iot', 'Windows 10 IoT Enterprise LTSC 2021 (evaluation)'],
+        ['win10-ltsc', 'Windows 10 Enterprise LTSC 2021 (VLSC only)'],
+        ['server2022', 'Windows Server 2022 (evaluation)'],
+        ['server2025', 'Windows Server 2025 (evaluation)']
+      ], (val) => {
+        const note = document.getElementById('edition-note');
+        if (!note) return;
+        if (val === 'win10-ltsc') {
+          note.textContent = 'This edition has no anonymous public download - it\'s VLSC/subscription-only. Download it yourself, then use "Advanced: use my own ISO files" below.';
+          note.style.display = 'block';
+        } else if (val.includes('enterprise') || val.includes('ltsc') || val.startsWith('server')) {
+          note.textContent = 'Evaluation editions come from Microsoft\'s Evaluation Center, which is less consistently scriptable than the retail-ISO page - if the automatic download fails, the wizard will tell you and you can fall back to "Advanced: use my own ISO files".';
+          note.style.display = 'block';
+        } else {
+          note.style.display = 'none';
+        }
+      })),
+      h('div', { id: 'edition-note', class: 'sub', style: 'display:none; margin-top:-6px' })
     ]),
     renderMediaCard(state),
     h('div', { class: 'card' }, [
@@ -710,14 +730,17 @@ function numberInput(state, key) {
   el.addEventListener('input', () => (state[key] = Number(el.value)));
   return el;
 }
-function selectInput(state, key, options) {
+function selectInput(state, key, options, onChange) {
   const el = h('select', {});
   options.forEach(([val, label]) => {
     const opt = h('option', { value: val }, label);
     if (val === state[key]) opt.setAttribute('selected', 'selected');
     el.appendChild(opt);
   });
-  el.addEventListener('change', () => (state[key] = el.value));
+  el.addEventListener('change', () => {
+    state[key] = el.value;
+    if (onChange) onChange(el.value);
+  });
   return el;
 }
 function checkbox(label, state, key) {
@@ -856,7 +879,7 @@ async function paintConfigForm(formHolder) {
 async function renderApps(root) {
   const page = h('div', { class: 'page' }, [
     h('h1', {}, 'Apps'),
-    h('div', { class: 'sub' }, "A winboat-style icon grid, backed by WinApps' own detection under the hood (installer.sh --user) - registry scan, matching, icons and MIME types are all WinApps' real, tested logic. Nothing here is reinvented; this screen just gives it a proper UI instead of a terminal dialog.")
+    h('div', { class: 'sub' }, "A winboat-style icon grid backed by WinApps' own real app catalog (icons, names, categories and MIME types synced straight from winapps-org/winapps's apps/ directory - a one-time download, cached offline forever after). Enabling an app writes exactly the .desktop launcher + wrapper script WinApps' own installer would.")
   ]);
 
   const installedCard = h('div', { class: 'card' }, [h('h2', {}, 'WinApps installation')]);
@@ -869,29 +892,27 @@ async function renderApps(root) {
   ]));
   page.appendChild(installedCard);
 
-  const detectCard = h('div', { class: 'card' }, [
-    h('h2', {}, 'Detect apps'),
-    h('div', { class: 'sub' }, 'Runs the real WinApps scan against the VM (a brief hidden RDP session that inventories installed programs) and refreshes the grid below. Safe to re-run any time after installing new Windows software - fully offline.')
+  const catalogCard = h('div', { class: 'card' }, [
+    h('h2', {}, 'App catalog'),
+    h('div', { class: 'sub' }, "This is the fix for apps showing as plain letter tiles: previously this screen depended on finding WinApps' installer.sh on disk (which varies a lot by install method) and a per-app icon.png it may or may not have cached. Now it pulls the real icons/names directly from the WinApps repo once, and caches them locally - no more guessing paths.")
   ]);
-  const scopeSelect = h('select', { style: 'max-width:220px;display:inline-block;margin-right:8px' }, [
-    h('option', { value: 'user' }, 'Current user only'),
-    h('option', { value: 'system' }, 'Whole system')
-  ]);
-  const detectLog = h('div', { class: 'sub', style: 'margin-top:10px; font-family:monospace; max-height:120px; overflow-y:auto' });
-  const detectBtn = h('button', {
+  const catalogStatus = h('div', { class: 'sub', style: 'margin-top:8px' }, 'Checking catalog...');
+  const syncLog = h('div', { class: 'sub', style: 'margin-top:8px; font-family:monospace; max-height:120px; overflow-y:auto' });
+  const syncBtn = h('button', {
     class: 'btn primary',
     onclick: async (ev) => {
       ev.target.disabled = true;
-      detectLog.textContent = '';
-      const unsub = window.api.winappsApps.onDetectionLine((line) => {
-        detectLog.textContent += line + '\n';
-        detectLog.scrollTop = detectLog.scrollHeight;
+      syncLog.textContent = '';
+      const unsub = window.api.appsCatalog.onSyncLine((line) => {
+        syncLog.textContent += line + '\n';
+        syncLog.scrollTop = syncLog.scrollHeight;
       });
       try {
-        const res = await window.api.winappsApps.runDetection(scopeSelect.value);
+        const res = await window.api.appsCatalog.sync(false);
         unsub();
         if (!res.ok) throw new Error(res.error);
-        toast('App detection finished.');
+        toast(`App catalog synced (${res.count} apps).`);
+        await refreshCatalogStatus();
         await refreshAppGrid();
       } catch (e) {
         unsub();
@@ -900,14 +921,56 @@ async function renderApps(root) {
         ev.target.disabled = false;
       }
     }
-  }, 'Detect apps now');
-  detectCard.appendChild(h('div', { class: 'row' }, [scopeSelect, detectBtn]));
-  detectCard.appendChild(detectLog);
-  page.appendChild(detectCard);
+  }, 'Sync catalog now');
+  catalogCard.appendChild(catalogStatus);
+  catalogCard.appendChild(h('div', { class: 'row', style: 'margin-top:8px' }, [syncBtn]));
+  catalogCard.appendChild(syncLog);
+  page.appendChild(catalogCard);
+
+  async function refreshCatalogStatus() {
+    try {
+      const status = await window.api.appsCatalog.status();
+      catalogStatus.innerHTML = '';
+      if (status.cached) {
+        catalogStatus.appendChild(h('span', { class: 'badge ok' }, `${status.count} apps cached`));
+        catalogStatus.appendChild(document.createTextNode(' - last synced ' + new Date(status.syncedAt).toLocaleString()));
+      } else {
+        catalogStatus.appendChild(h('span', { class: 'badge warn' }, 'Not synced yet'));
+        catalogStatus.appendChild(document.createTextNode(' - click "Sync catalog now" (one-time download, then fully offline).'));
+      }
+    } catch (e) {
+      catalogStatus.textContent = 'Could not check catalog status: ' + e.message;
+    }
+  }
+
+  const matchCard = h('div', { class: 'card' }, [
+    h('h2', {}, 'Match against a running VM (optional)'),
+    h('div', { class: 'sub' }, "Scans installed programs over the QEMU Guest Agent and flags which catalog apps look installed on the VM - purely informational, doesn't restrict what you can enable.")
+  ]);
+  const vmNameInput = h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:220px;display:inline-block;margin-right:8px' });
+  matchCard.appendChild(h('div', { class: 'row' }, [
+    vmNameInput,
+    h('button', {
+      class: 'btn',
+      onclick: async (ev) => {
+        ev.target.disabled = true;
+        try {
+          const matched = await window.api.appsCatalog.detectMatches(vmNameInput.value.trim());
+          highlightMatches(matched);
+          toast(`${matched.length} catalog app(s) look installed on that VM.`);
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          ev.target.disabled = false;
+        }
+      }
+    }, 'Scan VM & highlight matches')
+  ]));
+  page.appendChild(matchCard);
 
   const manualCard = h('div', { class: 'card' }, [
     h('h2', {}, 'Add an app manually'),
-    h('div', { class: 'sub' }, "For an app that isn't in WinApps' community-tested list yet. Give the full in-guest path to its .exe (per the WinApps README's \"manual\" mode).")
+    h('div', { class: 'sub' }, "For an app that isn't in the catalog yet. Give the full in-guest path to its .exe (per the WinApps README's \"manual\" mode).")
   ]);
   const manualPathInput = h('input', { type: 'text', placeholder: 'C:\\Program Files\\Some App\\app.exe', style: 'max-width:420px;display:inline-block;margin-right:8px' });
   manualCard.appendChild(h('div', { class: 'row' }, [
@@ -921,7 +984,6 @@ async function renderApps(root) {
           await window.api.winappsApps.addManual(manualPathInput.value.trim());
           toast('App added.');
           manualPathInput.value = '';
-          await refreshAppGrid();
         } catch (e) {
           toast(e.message, true);
         } finally {
@@ -934,7 +996,7 @@ async function renderApps(root) {
 
   const gridCard = h('div', { class: 'card' }, [
     h('div', { class: 'row', style: 'justify-content:space-between; margin-bottom:12px' }, [
-      h('h2', { style: 'margin:0' }, 'Detected apps'),
+      h('h2', { style: 'margin:0' }, 'Apps'),
       h('button', { class: 'btn small', onclick: () => refreshAppGrid() }, 'Refresh')
     ]),
     h('div', { id: 'app-grid', class: 'app-grid' }, [h('div', { class: 'sub' }, 'Loading...')])
@@ -943,16 +1005,16 @@ async function renderApps(root) {
 
   const previewCard = h('div', { class: 'card' }, [
     h('h2', {}, 'Raw installed-programs list (read-only)'),
-    h('div', { class: 'sub' }, "Queries the uninstall registry over the QEMU Guest Agent directly, in case you want to see everything on the VM regardless of whether WinApps has matched it yet.")
+    h('div', { class: 'sub' }, "Queries the uninstall registry over the QEMU Guest Agent directly, in case you want to see everything on the VM regardless of whether it's in the catalog.")
   ]);
-  const vmNameInput = h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:220px;display:inline-block;margin-right:8px' });
+  const vmNameInput2 = h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:220px;display:inline-block;margin-right:8px' });
   const results = h('div', { class: 'check-list', style: 'margin-top:12px' });
   previewCard.appendChild(h('div', { class: 'row' }, [
-    vmNameInput,
+    vmNameInput2,
     h('button', { class: 'btn', onclick: async () => {
       results.innerHTML = 'Scanning...';
       try {
-        const apps = await window.api.apps.scan(vmNameInput.value.trim());
+        const apps = await window.api.apps.scan(vmNameInput2.value.trim());
         results.innerHTML = '';
         if (!apps.length) results.appendChild(h('div', { class: 'sub' }, 'No programs found (or VM not running / guest agent not ready).'));
         apps.forEach((a) => {
@@ -970,7 +1032,17 @@ async function renderApps(root) {
   page.appendChild(previewCard);
 
   root.appendChild(page);
+  await refreshCatalogStatus();
   await refreshAppGrid();
+}
+
+function highlightMatches(matchedSlugs) {
+  const grid = document.getElementById('app-grid');
+  if (!grid) return;
+  const set = new Set(matchedSlugs);
+  grid.querySelectorAll('[data-app-slug]').forEach((tile) => {
+    tile.classList.toggle('app-tile-matched', set.has(tile.dataset.appSlug));
+  });
 }
 
 async function refreshAppGrid() {
@@ -979,13 +1051,13 @@ async function refreshAppGrid() {
   grid.innerHTML = '';
   let apps = [];
   try {
-    apps = await window.api.winappsApps.list();
+    apps = await window.api.appsCatalog.list();
   } catch (e) {
-    grid.appendChild(h('div', { class: 'sub' }, 'Could not read app list: ' + e.message));
+    grid.appendChild(h('div', { class: 'sub' }, 'Could not read app catalog: ' + e.message));
     return;
   }
   if (!apps.length) {
-    grid.appendChild(h('div', { class: 'sub' }, 'No apps detected yet - click "Detect apps now" above.'));
+    grid.appendChild(h('div', { class: 'sub' }, 'Catalog is empty - click "Sync catalog now" above.'));
     return;
   }
   for (const app of apps) {
@@ -1003,7 +1075,7 @@ function appTile(app) {
   toggle.addEventListener('change', async () => {
     toggle.disabled = true;
     try {
-      await window.api.winappsApps.setEnabled(app.id, toggle.checked);
+      await window.api.appsCatalog.setEnabled(app.slug, toggle.checked);
     } catch (e) {
       toast(e.message, true);
       toggle.checked = !toggle.checked;
@@ -1012,7 +1084,7 @@ function appTile(app) {
     }
   });
 
-  return h('div', { class: 'app-tile' }, [
+  return h('div', { class: 'app-tile', 'data-app-slug': app.slug }, [
     iconEl,
     h('div', { class: 'app-tile-name' }, app.name),
     h('label', { class: 'app-tile-toggle' }, [toggle, ' shown in launcher'])

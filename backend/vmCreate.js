@@ -80,7 +80,7 @@ async function createVm(opts, onProgress = () => {}) {
     ovmf,
     nvramPath,
     memballoon: opts.memballoon !== false,
-    osId: opts.osTargetHint === 'win10' ? 'http://microsoft.com/win/10' : 'http://microsoft.com/win/11',
+    osId: guessLibosinfoId(opts.osTargetHint),
     cpuPinning: opts.cpuPinning || null,
     topology: opts.topology || null
   });
@@ -154,6 +154,18 @@ async function pollUntilAgentReady(name, report, timeoutMs = 45 * 60 * 1000) {
     }
   }
   throw new Error('Timed out waiting for QEMU Guest Agent to respond inside the 45-minute window. The install may still be running - check with `virsh domstate ' + name + '` and a viewer if needed.');
+}
+
+// Purely cosmetic libosinfo metadata (drives the icon/name virt-manager
+// shows for the VM) - best-effort mapping so newly added editions
+// (Enterprise/LTSC/IoT/Server) still get a sane tag instead of always
+// falling through to "win/11".
+function guessLibosinfoId(editionId = '') {
+  if (editionId.startsWith('win10')) return 'http://microsoft.com/win/10';
+  if (editionId.startsWith('win11')) return 'http://microsoft.com/win/11';
+  if (editionId.startsWith('server2025')) return 'http://microsoft.com/win/2k25';
+  if (editionId.startsWith('server2022')) return 'http://microsoft.com/win/2k22';
+  return 'http://microsoft.com/win/11';
 }
 
 module.exports = { createVm };
