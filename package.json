@@ -1,6 +1,6 @@
 {
   "name": "winapps-manager",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "GUI to create and manage WinApps libvirt Windows VMs.",
   "license": "MIT",
   "author": "MaouNour",
