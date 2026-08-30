@@ -9,12 +9,6 @@ const HOME = os.homedir();
 const WINAPPS_CONF_DIR = path.join(HOME, '.config', 'winapps');
 const WINAPPS_CONF_FILE = path.join(WINAPPS_CONF_DIR, 'winapps.conf');
 const WINAPPS_APPS_DIR = path.join(HOME, '.local', 'share', 'winapps');
-// Where WinApps' own installer writes .desktop launchers + wrapper scripts
-// for enabled apps (user-mode install paths, per setup.sh/installer.sh).
-// We write/remove files here directly for the in-app app picker so enabling
-// or disabling an app has the exact same effect as running winapps-setup.
-const DESKTOP_ENTRIES_DIR = path.join(HOME, '.local', 'share', 'applications');
-const WINAPPS_BIN_DIR = path.join(HOME, '.local', 'bin');
 
 // Where THIS manager app keeps its own state (cached ISOs, generated seed
 // ISOs, scanned-app cache, per-VM metadata). Nothing here is required by
@@ -25,17 +19,9 @@ const SEED_ISO_DIR = path.join(APP_DATA_DIR, 'seed-isos'); // generated autounat
 const DOWNLOADS_DIR = path.join(APP_DATA_DIR, 'downloads'); // cached VirtIO iso, script bundle
 const VM_META_DIR = path.join(APP_DATA_DIR, 'vms'); // one JSON file per VM this tool created
 const LOG_FILE = path.join(APP_DATA_DIR, 'manager.log');
-// Local cache of the WinApps "apps/" catalog (icons + info per app), fetched
-// once from the repo and reused offline forever after - same pattern as the
-// existing oem-file caching in unattend.js.
-const APP_CATALOG_DIR = path.join(APP_DATA_DIR, 'app-catalog');
-const APP_CATALOG_MANIFEST = path.join(APP_CATALOG_DIR, 'manifest.json');
 
 function ensureDirs() {
-  for (const d of [
-    APP_DATA_DIR, VM_IMAGES_DIR, SEED_ISO_DIR, DOWNLOADS_DIR, VM_META_DIR,
-    WINAPPS_CONF_DIR, APP_CATALOG_DIR, DESKTOP_ENTRIES_DIR, WINAPPS_BIN_DIR
-  ]) {
+  for (const d of [APP_DATA_DIR, VM_IMAGES_DIR, SEED_ISO_DIR, DOWNLOADS_DIR, VM_META_DIR, WINAPPS_CONF_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
 }
@@ -78,16 +64,12 @@ module.exports = {
   WINAPPS_CONF_DIR,
   WINAPPS_CONF_FILE,
   WINAPPS_APPS_DIR,
-  DESKTOP_ENTRIES_DIR,
-  WINAPPS_BIN_DIR,
   APP_DATA_DIR,
   VM_IMAGES_DIR,
   SEED_ISO_DIR,
   DOWNLOADS_DIR,
   VM_META_DIR,
   LOG_FILE,
-  APP_CATALOG_DIR,
-  APP_CATALOG_MANIFEST,
   ensureDirs,
   findOvmf
 };

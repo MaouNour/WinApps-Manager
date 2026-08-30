@@ -69,30 +69,19 @@ line, and field order in your file is left untouched. Every field from your
 file is editable here.
 
 ### Apps
-A real in-app logo+checkbox picker (`backend/appsCatalog.js` +
-`backend/appsManage.js`), not a terminal launcher:
+WinApps already ships its own app-detection wizard, `winapps-setup`
+(installed by `setup.sh`), which scans the Windows registry, matches
+"community-tested" apps with proper icons/MIME types, and gives you a
+checkbox picker. Rather than re-implementing that (and risking a picker
+that's out of sync with WinApps' actual desktop-entry format), this screen
+launches WinApps' own installer/picker in a terminal window - that's the
+"Install WinApps now" / "Refresh app list" buttons. Both work fully offline
+once WinApps itself is installed.
 
-- **Catalog sync** (`appsCatalog.js`) - a one-time (or explicit re-run)
-  fetch of the `apps/` folder from the WinApps repo: each app's `info` file
-  (name/categories/MIME types) and `icon.svg` are cached to
-  `~/.local/share/winapps-manager/app-catalog/`. This is the *only* network
-  use anywhere in the Apps screen, and it's opt-in and one-time - after that
-  the picker is 100% offline, same pattern as the existing OEM-file caching
-  used during VM creation.
-- **Enable/disable** (`appsManage.js`) - ticking a box writes
-  `~/.local/share/applications/<slug>.desktop` plus an executable
-  `~/.local/bin/<slug>` wrapper that calls `winapps <slug>`; unticking
-  removes both. This is byte-for-byte what WinApps' own installer does when
-  you tick a box in its terminal wizard (`Exec=<bin>/winapps <slug> %F`,
-  `Icon=`, `Categories=`, `MimeType=` all populated from the cached `info`
-  file) - just triggered by a click instead of a `dialog` TUI.
-  "Windows (Full RDP Session)" is always included as its own tile, matching
-  the repo's README app table.
-- **Detection** - a "Detect installed apps" button re-runs the existing
-  guest-agent registry scan (`appsScan.js`, still offline/no-RDP) and
-  fuzzy-matches installed program names against the catalog, showing a green
-  dot on tiles that look installed. Purely informational - every tile stays
-  checkable regardless, since detection is best-effort name matching.
+What *is* custom here: a read-only "installed programs" preview
+(`backend/appsScan.js`) that queries the Windows uninstall registry over the
+QEMU Guest Agent (`virsh qemu-agent-command`, no RDP/network needed) just so
+you can glance at what's on the VM before opening the picker.
 
 ### Dashboard - quick actions
 Directly implements the aliases you described, with the VM name substituted
@@ -107,30 +96,90 @@ per row instead of hardcoded:
 | `stop-win-network` | `iptables -A FORWARD -s <subnet> -d 0.0.0.0/0 -j DROP` via `pkexec`, subnet auto-read from `virsh net-dumpxml` (`backend/network.js`) |
 | `connect-win-network` | same rule, `-D` instead of `-A` |
 
-## Not yet built (next steps, scoped on purpose)
+## What's new in this pass
 
-This is a first full pass, not the finished product - flagging what's
-scaffolded vs. what needs another iteration:
+You asked me to verify everything claimed against the docs, and to add
+network/stats controls, a properly displayed app picker, fully hands-off
+ISO handling, and live Defender/Update/Firewall/service/resource controls.
+Here's what changed:
 
-- **ISO auto-downloader** - the wizard's ISO fields are still local-file-only
-  (browse to a Windows ISO and a VirtIO ISO you already downloaded). An
-  in-app "download instead" option for both is the next gap to close.
-- **CPU pinning picker UI** - the backend (`libvirtXml.js`) already accepts
+### Fully automatic ISO acquisition (`backend/isoAcquire.js`)
+The wizard no longer requires picking any file:
+- **VirtIO drivers ISO** downloads straight from the official Fedora
+  mirror's stable `latest-virtio` link - no interaction needed, ever.
+- **Windows installer ISO** is fetched by replicating the same public,
+  unauthenticated request flow Microsoft's own software-download page uses
+  to hand out direct ISO links (the same technique behind tools like
+  Fido/Rufus's ISO downloader). Both are cached under
+  `~/.local/share/winapps-manager/downloads/` so later VMs reuse them
+  instantly. **Caveat, stated plainly:** Microsoft can rate-limit or change
+  this endpoint at any time without notice; if it fails, the wizard's
+  "Advanced: use my own ISO files" section is there as a manual fallback -
+  I didn't want to hide a hard failure behind a fake success.
+
+### VM stats + resource/storage editing (`backend/vmStats.js`, `backend/vmResize.js`)
+Dashboard → **Details** on any VM now shows live CPU %, RAM used/total, disk
+allocated/capacity, and network throughput (via `virsh dommemstat`/`cpu-stats`/
+`domifstat`/`qemu-img info`), plus editable vCPUs, RAM, and qcow2 disk size
+(`virt-xml --edit` + `qemu-img resize`, applied while the VM is shut off -
+growing the disk still needs "Extend Volume" inside Windows Disk Management
+afterwards, which I call out in the UI rather than silently repartitioning
+for you).
+
+### Live Defender/Update/Firewall/bloat-service control (`backend/guestControl.js`)
+These were previously only set once at first boot. They're now:
+- Applied at first boot (unchanged, still your wizard checkboxes) **and**
+- Toggleable live afterwards from Dashboard → Details, with real status
+  read back from the guest (`Get-MpPreference`, `Get-Service wuauserv`,
+  `Get-NetFirewallProfile`) so the badge always reflects actual state, not
+  just what you last clicked.
+- The bloat-service list is expanded (idle telemetry/search/indexing
+  services, scheduled tasks, Xbox/Bing appx bloat) and now also tunes the
+  power plan for a headless VM (disables monitor/disk timeouts, switches to
+  the minimum power scheme) - the "optimize performance/RAM" ask.
+
+### A real, winboat-style app picker (`backend/winappsApps.js`)
+I looked at WinApps' actual internals before touching this: `installer.sh`
+already does registry-based detection over a hidden RDP session, matches
+against its community-tested `apps/` list (pulling in proper icons + MIME
+types), and caches each result as `~/.local/share/winapps/apps/<exe>/{info,icon.png}`.
+Rather than reimplementing that detection (and risking a picker that drifts
+out of sync with WinApps' real format), the Apps page:
+- Runs the **real** detection (`installer.sh --user`/`--system`, both
+  documented non-interactive flags) with a "Detect apps now" button and a
+  live log, instead of opening a separate terminal window.
+- Reads WinApps' own cached `icon.png` + `info` files and renders them as an
+  icon grid with per-app toggles (winboat-style), so no data is invented -
+  every icon and name shown is exactly what WinApps generated.
+- Toggling an app adds/removes `NoDisplay=true` on its actual `.desktop`
+  file rather than deleting anything, so it's fully reversible.
+- Supports WinApps' documented manual-add path
+  (`bin/winapps manual "C:\path\to\app.exe"`) for anything not in the
+  community list yet.
+- Still exposes the read-only registry preview from before, for a quick
+  look at literally everything installed regardless of WinApps' matching.
+
+### Network controls
+Unchanged in mechanism (still real `iptables`/`virsh` calls, not
+simulated), but now surfaced with live status badges next to each VM on the
+Dashboard instead of being a fire-and-forget button.
+
+## Still not built (being upfront about the remaining gaps)
+
+- **CPU pinning picker UI** - `libvirtXml.js` already accepts
   `cpuPinning`/`topology`, but the wizard doesn't have the `lscpu -e`-driven
   picker from the docs' "Optional: Assign Specific Physical CPU Cores"
   section yet.
-- **ISO downloader** - by design, ISO selection is local-file-only right now
-  (per your "shouldn't require network" note for day-to-day use); a
-  "download VirtIO ISO" convenience button could be added as an opt-in.
 - **Static IP config, shared-folder virtiofs setup, GPU passthrough** - all
   documented as optional in `docs/libvirt.md`, not yet exposed in the UI.
-- **`net:status`/`net:disconnect` currently key off the `default` libvirt
-  network name**, not a specific VM - fine while there's one VM on the
-  default NAT network, but multi-VM setups on different networks need the
-  network name threaded through per VM (the VM metadata saved in
-  `~/.local/share/winapps-manager/vms/<name>.json` already has what's needed
-  to wire this up).
+- **`net:status`/`net:disconnect` still key off the `default` libvirt
+  network name**, not a specific VM - fine for one VM on the default NAT
+  network; multi-VM setups on different networks need the network name
+  threaded through per VM (the metadata file already has what's needed to
+  wire this up, just not done yet).
 - **`pkexec` is used for the iptables toggle** - works out of the box on
-  most desktop Linux, but if there's no polkit agent running you'll get a
-  password prompt failure; happy to switch to a sudoers NOPASSWD rule
-  instead if you'd rather not see any prompt at all.
+  most desktop Linux with a polkit agent running; happy to switch to a
+  sudoers NOPASSWD rule instead if you'd rather not see a prompt at all.
+- **Windows ISO auto-download is inherently the most fragile piece here**
+  since it depends on an undocumented Microsoft endpoint - flagged above,
+  not hidden.

@@ -4,6 +4,12 @@ const path = require('path');
 const https = require('https');
 const { buildIso } = require('./isoTools');
 const { DOWNLOADS_DIR, SEED_ISO_DIR } = require('./paths');
+const {
+  psDisableDefender,
+  psDisableUpdates,
+  psDisableFirewall,
+  psDisableBloat
+} = require('./guestControl');
 
 const OEM_BASE = 'https://raw.githubusercontent.com/winapps-org/winapps/main/oem/';
 // Exactly the four files docs/libvirt.md instructs you to download for a
@@ -176,10 +182,11 @@ ${driverPaths.join('\n')}
 }
 
 /** bootstrap.cmd: runs once at first logon, off the seed ISO, entirely offline. */
-function buildBootstrapCmd({ enableDefenderDisable, enableUpdatesDisable, enableBloatDisable }) {
+function buildBootstrapCmd({ enableDefenderDisable, enableUpdatesDisable, enableFirewallDisable, enableBloatDisable }) {
   const optional = [];
   if (enableDefenderDisable) optional.push('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0disable-defender.ps1"');
   if (enableUpdatesDisable) optional.push('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0disable-updates.ps1"');
+  if (enableFirewallDisable) optional.push('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0disable-firewall.ps1"');
   if (enableBloatDisable) optional.push('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0disable-bloat.ps1"');
 
   return `@echo off
@@ -216,54 +223,6 @@ echo [winapps-manager] First-boot setup complete.
 `;
 }
 
-function psDisableDefender() {
-  return `# Best-effort Defender relaxation for a dedicated WinApps VM. Requires Tamper
-# Protection to already be off (cannot be scripted); if Set-MpPreference is
-# blocked, this VM has Tamper Protection on and it must be disabled by hand
-# in Windows Security first.
-Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
-Set-MpPreference -DisableBehaviorMonitoring $true -ErrorAction SilentlyContinue
-Set-MpPreference -DisableIOAVProtection $true -ErrorAction SilentlyContinue
-Set-MpPreference -DisableScriptScanning $true -ErrorAction SilentlyContinue
-Set-MpPreference -MAPSReporting 0 -ErrorAction SilentlyContinue
-Set-MpPreference -SubmitSamplesConsent 2 -ErrorAction SilentlyContinue
-sc.exe config WinDefend start=disabled 2>$null
-sc.exe config WdNisSvc start=disabled 2>$null
-`;
-}
-
-function psDisableUpdates() {
-  return `sc.exe config wuauserv start=disabled
-sc.exe stop wuauserv 2>$null
-sc.exe config UsoSvc start=disabled
-sc.exe stop UsoSvc 2>$null
-New-Item -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU" -Force | Out-Null
-Set-ItemProperty -Path "HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU" -Name NoAutoUpdate -Value 1 -Type DWord
-`;
-}
-
-function psDisableBloat() {
-  return `# Trims background services/scheduled tasks that add idle CPU/RAM overhead
-# and are pointless in a headless RemoteApp VM.
-$services = @('DiagTrack','dmwappushservice','MapsBroker','RetailDemo','WSearch','SysMain')
-foreach ($s in $services) {
-  sc.exe config $s start=disabled 2>$null
-  sc.exe stop $s 2>$null
-}
-$tasks = @(
-  '\\Microsoft\\Windows\\Application Experience\\Microsoft Compatibility Appraiser',
-  '\\Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator',
-  '\\Microsoft\\Windows\\Feedback\\Siuf\\DmClient'
-)
-foreach ($t in $tasks) {
-  schtasks /Change /TN $t /Disable 2>$null
-}
-Get-AppxPackage -AllUsers *xboxapp* | Remove-AppxPackage -ErrorAction SilentlyContinue
-Get-AppxPackage -AllUsers *bingweather* | Remove-AppxPackage -ErrorAction SilentlyContinue
-Get-AppxPackage -AllUsers *bingnews* | Remove-AppxPackage -ErrorAction SilentlyContinue
-`;
-}
-
 /**
  * Builds the whole seed ISO (autounattend.xml + oem scripts) for one VM
  * creation run and returns its path.
@@ -278,6 +237,7 @@ async function buildSeedIso(vmOpts, onLine) {
   fs.writeFileSync(path.join(stage, 'bootstrap.cmd'), buildBootstrapCmd(vmOpts));
   fs.writeFileSync(path.join(stage, 'disable-defender.ps1'), psDisableDefender());
   fs.writeFileSync(path.join(stage, 'disable-updates.ps1'), psDisableUpdates());
+  fs.writeFileSync(path.join(stage, 'disable-firewall.ps1'), psDisableFirewall());
   fs.writeFileSync(path.join(stage, 'disable-bloat.ps1'), psDisableBloat());
   for (const f of OEM_FILES) {
     fs.copyFileSync(path.join(oemDir, f), path.join(stage, f));

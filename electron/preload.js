@@ -38,18 +38,27 @@ contextBridge.exposeInMainWorld('api', {
     check: () => ipcRenderer.invoke('winapps:check')
   },
   apps: {
-    scan: (vmName) => ipcRenderer.invoke('apps:scan', vmName),
-    catalogIsCached: () => ipcRenderer.invoke('apps:catalog:isCached'),
-    catalogGet: () => ipcRenderer.invoke('apps:catalog:get'),
-    catalogSync: (force) => ipcRenderer.invoke('apps:catalog:sync', force),
-    onCatalogSyncProgress: (cb) => {
+    scan: (vmName) => ipcRenderer.invoke('apps:scan', vmName)
+  },
+  vmExtra: {
+    meta: (name) => ipcRenderer.invoke('vm:meta', name),
+    stats: (name) => ipcRenderer.invoke('vm:stats', name),
+    resizeCompute: (name, opts) => ipcRenderer.invoke('vm:resizeCompute', name, opts),
+    growDisk: (name, diskPath, newSizeGiB) => ipcRenderer.invoke('vm:growDisk', name, diskPath, newSizeGiB)
+  },
+  guest: {
+    status: (name) => ipcRenderer.invoke('guest:status', name),
+    toggle: (name, feature, enabled) => ipcRenderer.invoke('guest:toggle', name, feature, enabled)
+  },
+  winappsApps: {
+    runDetection: (scope) => ipcRenderer.invoke('winappsApps:runDetection', scope),
+    onDetectionLine: (cb) => {
       const listener = (_e, line) => cb(line);
-      ipcRenderer.on('apps:catalog:sync:progress', listener);
-      return () => ipcRenderer.removeListener('apps:catalog:sync:progress', listener);
+      ipcRenderer.on('winappsApps:detectionLine', listener);
+      return () => ipcRenderer.removeListener('winappsApps:detectionLine', listener);
     },
-    listEnabled: (catalog) => ipcRenderer.invoke('apps:enabled:list', catalog),
-    enable: (app) => ipcRenderer.invoke('apps:enable', app),
-    disable: (slug) => ipcRenderer.invoke('apps:disable', slug),
-    detectMatches: (catalog, installedPrograms) => ipcRenderer.invoke('apps:detectMatches', catalog, installedPrograms)
+    list: () => ipcRenderer.invoke('winappsApps:list'),
+    setEnabled: (appId, enabled) => ipcRenderer.invoke('winappsApps:setEnabled', appId, enabled),
+    addManual: (exePath) => ipcRenderer.invoke('winappsApps:addManual', exePath)
   }
 });

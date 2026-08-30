@@ -4,6 +4,7 @@ const path = require('path');
 const { run } = require('./exec');
 const { buildDomainXml } = require('./libvirtXml');
 const { buildSeedIso } = require('./unattend');
+const { ensureVirtioIso, ensureWindowsIso } = require('./isoAcquire');
 const { VM_IMAGES_DIR, SEED_ISO_DIR, VM_META_DIR, findOvmf } = require('./paths');
 
 /**
@@ -38,7 +39,19 @@ async function createVm(opts, onProgress = () => {}) {
   report('disk', 5, 'Creating virtual disk...');
   await run('qemu-img', ['create', '-f', 'qcow2', diskPath, `${opts.diskSizeGiB}G`]);
 
-  report('seed', 15, 'Building unattended-install answer file + OEM scripts...');
+  // Fully automatic media acquisition: unless the user explicitly picked a
+  // local file in "Advanced", we fetch + cache both ISOs ourselves so
+  // nobody ever has to hunt down installer media by hand.
+  let windowsIsoPath = opts.windowsIsoPath;
+  if (!windowsIsoPath) {
+    windowsIsoPath = await ensureWindowsIso(opts.osTargetHint, (p) => report('windows-iso', 6 + p.pct * 0.09, p.message));
+  }
+  let virtioIsoPath = opts.virtioIsoPath;
+  if (!virtioIsoPath) {
+    virtioIsoPath = await ensureVirtioIso((p) => report('virtio-iso', 15 + p.pct * 0.05, p.message));
+  }
+
+  report('seed', 22, 'Building unattended-install answer file + OEM scripts...');
   const seedIsoPath = await buildSeedIso(
     {
       name: opts.name,
@@ -48,9 +61,10 @@ async function createVm(opts, onProgress = () => {}) {
       osTargetHint: opts.osTargetHint,
       enableDefenderDisable: !!opts.enableDefenderDisable,
       enableUpdatesDisable: !!opts.enableUpdatesDisable,
+      enableFirewallDisable: !!opts.enableFirewallDisable,
       enableBloatDisable: !!opts.enableBloatDisable
     },
-    (line) => report('seed', 20, line)
+    (line) => report('seed', 25, line)
   );
 
   report('xml', 35, 'Generating libvirt domain XML...');
@@ -60,8 +74,8 @@ async function createVm(opts, onProgress = () => {}) {
     currentMemoryMiB: opts.currentMemoryMiB || opts.memoryMiB,
     vcpus: opts.vcpus,
     diskPath,
-    windowsIsoPath: opts.windowsIsoPath,
-    virtioIsoPath: opts.virtioIsoPath,
+    windowsIsoPath,
+    virtioIsoPath,
     seedIsoPath,
     ovmf,
     nvramPath,
@@ -95,7 +109,12 @@ async function createVm(opts, onProgress = () => {}) {
         username: opts.username,
         diskPath,
         xmlPath,
-        seedIsoPath
+        seedIsoPath,
+        windowsIsoPath,
+        virtioIsoPath,
+        memoryMiB: opts.memoryMiB,
+        vcpus: opts.vcpus,
+        diskSizeGiB: opts.diskSizeGiB
       },
       null,
       2

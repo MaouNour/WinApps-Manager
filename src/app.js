@@ -125,8 +125,139 @@ async function vmRow(vm) {
       netDisconnected ? window.api.net.reconnect('default') : window.api.net.disconnect('default')
     )
   );
+  const detailsBtn = h('button', { class: 'btn small' }, 'Details');
+  actions.appendChild(detailsBtn);
+
+  const wrap = h('div', {}, [row]);
+  const detailsArea = h('div', { style: 'display:none; margin-top:8px' });
+  wrap.appendChild(detailsArea);
+  detailsBtn.addEventListener('click', async () => {
+    const showing = detailsArea.style.display !== 'none';
+    detailsArea.style.display = showing ? 'none' : 'block';
+    detailsBtn.textContent = showing ? 'Details' : 'Hide details';
+    if (!showing) {
+      detailsArea.innerHTML = 'Loading...';
+      detailsArea.appendChild(await renderVmDetails(vm));
+    }
+  });
+
   row.appendChild(actions);
-  return row;
+  return wrap;
+}
+
+/* -------------------------- VM DETAILS PANEL -------------------------- */
+
+async function renderVmDetails(vm) {
+  const panel = h('div', { class: 'card', style: 'background:var(--panel-2)' });
+
+  // --- Live stats ---
+  const statsBox = h('div', { style: 'margin-bottom:16px' });
+  statsBox.appendChild(h('h3', {}, 'Live stats'));
+  const statsBody = h('div', { class: 'sub' }, 'Loading...');
+  statsBox.appendChild(statsBody);
+  panel.appendChild(statsBox);
+
+  try {
+    const stats = await window.api.vmExtra.stats(vm.name);
+    statsBody.innerHTML = '';
+    const memUsedMiB = Math.round((stats.memory.usedKiB || 0) / 1024);
+    const memTotalMiB = Math.round((stats.memory.availableKiB || 0) / 1024);
+    statsBody.appendChild(h('div', { class: 'row' }, [
+      h('span', { class: 'badge' }, `CPU: ${stats.cpuPercent == null ? '—' : stats.cpuPercent + '%'}`),
+      h('span', { class: 'badge' }, `RAM: ${memUsedMiB || '—'} / ${memTotalMiB || '—'} MiB`),
+      stats.disk ? h('span', { class: 'badge' }, `Disk: ${(stats.disk.actualSizeBytes / 1e9).toFixed(1)} / ${(stats.disk.virtualSizeBytes / 1e9).toFixed(1)} GB`) : null,
+      stats.network ? h('span', { class: 'badge' }, `Net: ↓${(stats.network.rxBytes / 1e6).toFixed(1)}MB ↑${(stats.network.txBytes / 1e6).toFixed(1)}MB`) : null
+    ]));
+  } catch (e) {
+    statsBody.textContent = 'Stats unavailable: ' + e.message;
+  }
+
+  // --- Resize compute/storage ---
+  const meta = await window.api.vmExtra.meta(vm.name).catch(() => null);
+  const resizeBox = h('div', { style: 'margin-bottom:16px' });
+  resizeBox.appendChild(h('h3', {}, 'Resources (edit, VM must be shut off)'));
+  const vcpuInput = h('input', { type: 'number', value: (meta && meta.vcpus) || 2, style: 'max-width:100px' });
+  const memInput = h('input', { type: 'number', value: (meta && meta.memoryMiB) || 4096, style: 'max-width:140px' });
+  const diskInput = h('input', { type: 'number', value: (meta && meta.diskSizeGiB) || 64, style: 'max-width:100px' });
+  resizeBox.appendChild(h('div', { class: 'row' }, [
+    h('div', {}, [h('label', {}, 'vCPUs'), vcpuInput]),
+    h('div', {}, [h('label', {}, 'Memory (MiB)'), memInput]),
+    h('div', {}, [h('label', {}, 'Disk (GiB, grow only)'), diskInput]),
+    h('button', {
+      class: 'btn',
+      onclick: async (ev) => {
+        ev.target.disabled = true;
+        try {
+          await window.api.vmExtra.resizeCompute(vm.name, { vcpus: Number(vcpuInput.value), memoryMiB: Number(memInput.value) });
+          if (meta && meta.diskPath && Number(diskInput.value) > (meta.diskSizeGiB || 0)) {
+            await window.api.vmExtra.growDisk(vm.name, meta.diskPath, Number(diskInput.value));
+          }
+          toast('Resources updated. Start the VM to apply.');
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          ev.target.disabled = false;
+        }
+      }
+    }, 'Apply')
+  ]));
+  resizeBox.appendChild(h('div', { class: 'sub' }, 'Growing the disk only extends the virtual file - use Disk Management inside Windows afterwards to extend the NTFS volume onto the new space.'));
+  panel.appendChild(resizeBox);
+
+  // --- Live Defender/Update/Firewall/bloat toggles ---
+  const guestBox = h('div', {});
+  guestBox.appendChild(h('h3', {}, 'Windows Defender / Update / Firewall / background services'));
+  const guestBody = h('div', { class: 'check-list' }, [h('div', { class: 'sub' }, 'Requires the VM to be running with the guest agent responding. Loading current state...')]);
+  guestBox.appendChild(guestBody);
+  panel.appendChild(guestBox);
+
+  const FEATURES = [
+    ['defender', 'Windows Defender', 'defenderDisabled'],
+    ['updates', 'Windows Update', 'updatesDisabled'],
+    ['firewall', 'Windows Firewall', 'firewallDisabled'],
+    ['bloat', 'Background bloat services/tasks', 'bloatDisabled']
+  ];
+
+  try {
+    const status = await window.api.guest.status(vm.name);
+    guestBody.innerHTML = '';
+    for (const [feature, label, statusKey] of FEATURES) {
+      const disabled = !!status[statusKey];
+      const item = h('div', { class: 'check-item' }, [
+        h('div', { class: 'label' }, label),
+        h('div', { class: 'row' }, [
+          h('span', { class: 'badge ' + (disabled ? 'warn' : 'ok') }, disabled ? 'disabled' : 'enabled'),
+          h('button', {
+            class: 'btn small',
+            onclick: async (ev) => {
+              ev.target.disabled = true;
+              try {
+                await window.api.guest.toggle(vm.name, feature, disabled /* enable if currently disabled */);
+                toast(`${label} ${disabled ? 'enabled' : 'disabled'}.`);
+                detailsAreaRefresh(vm);
+              } catch (e) {
+                toast(e.message, true);
+              } finally {
+                ev.target.disabled = false;
+              }
+            }
+          }, disabled ? 'Enable' : 'Disable')
+        ])
+      ]);
+      guestBody.appendChild(item);
+    }
+  } catch (e) {
+    guestBody.innerHTML = '';
+    guestBody.appendChild(h('div', { class: 'sub' }, 'Could not read guest status: ' + e.message));
+  }
+
+  return panel;
+}
+
+function detailsAreaRefresh(vm) {
+  // Cheap approach: just re-render the whole dashboard list so every panel
+  // (including this one, if still expanded) reflects fresh state.
+  refreshVmList();
 }
 
 /* ------------------------------ WIZARD ------------------------------ */
@@ -140,6 +271,7 @@ function renderWizard() {
     diskSizeGiB: 64,
     windowsIsoPath: '',
     virtioIsoPath: '',
+    useAutoMedia: true,
     osTargetHint: 'win11',
     username: '',
     password: '',
@@ -147,12 +279,13 @@ function renderWizard() {
     startOnBoot: true,
     enableDefenderDisable: false,
     enableUpdatesDisable: false,
+    enableFirewallDisable: false,
     enableBloatDisable: false
   };
 
   const page = h('div', { class: 'page' }, [
     h('h1', {}, 'Create a Windows VM'),
-    h('div', { class: 'sub' }, 'Fully automates docs/libvirt.md: disk + domain XML with the Hyper-V enlightenments, clock tuning and guest-agent channel from the docs, an unattended silent Windows install, and the post-install RDP/registry/driver setup - no need to click through Windows setup yourself.'),
+    h('div', { class: 'sub' }, 'Fully automates docs/libvirt.md: disk + domain XML with the Hyper-V enlightenments, clock tuning and guest-agent channel from the docs, an unattended silent Windows install, and the post-install RDP/registry/driver setup - no need to click through Windows setup, and by default no need to touch ISOs either.'),
     h('div', { class: 'card' }, [
       h('h2', {}, 'VM identity'),
       field('VM name (must match winapps.conf VM_NAME)', textInput(state, 'name')),
@@ -161,12 +294,7 @@ function renderWizard() {
         ['win10', 'Windows 10 (Pro/Enterprise)']
       ]))
     ]),
-    h('div', { class: 'card' }, [
-      h('h2', {}, 'Install media'),
-      isoField('Windows installer ISO', state, 'windowsIsoPath'),
-      isoField('VirtIO drivers ISO', state, 'virtioIsoPath'),
-      h('div', { class: 'sub' }, 'Pick local files. If you don\'t have them yet, download the Windows ISO from microsoft.com and the VirtIO ISO from the Fedora people mirror, then point here - no in-app downloader is bundled, so nothing here ever needs network access once you have the files.')
-    ]),
+    renderMediaCard(state),
     h('div', { class: 'card' }, [
       h('h2', {}, 'Resources'),
       h('div', { class: 'grid-2' }, [
@@ -176,7 +304,8 @@ function renderWizard() {
         field('Disk size (GiB)', numberInput(state, 'diskSizeGiB'))
       ]),
       checkbox('Enable VirtIO memory ballooning (recommended)', state, 'memballoon'),
-      checkbox('Start VM automatically on host boot', state, 'startOnBoot')
+      checkbox('Start VM automatically on host boot', state, 'startOnBoot'),
+      h('div', { class: 'sub' }, 'All of these (RAM, vCPUs, disk size) stay editable later from the Dashboard once the VM exists.')
     ]),
     h('div', { class: 'card' }, [
       h('h2', {}, 'Windows account (becomes RDP_USER / RDP_PASS)'),
@@ -190,11 +319,13 @@ function renderWizard() {
       h('h2', {}, 'Optional hardening (applied silently on first boot)'),
       checkbox('Disable Windows Defender', state, 'enableDefenderDisable'),
       checkbox('Disable Windows Update', state, 'enableUpdatesDisable'),
-      checkbox('Trim background bloat services/tasks', state, 'enableBloatDisable')
+      checkbox('Disable Windows Firewall', state, 'enableFirewallDisable'),
+      checkbox('Trim background bloat services/tasks (also tunes power plan for a headless VM)', state, 'enableBloatDisable'),
+      h('div', { class: 'sub' }, 'All four stay toggleable live later too, from the Dashboard - this just sets the starting state.')
     ]),
     h('div', { class: 'card', id: 'wizard-progress-card' }, [
       h('h2', {}, 'Create'),
-      h('div', { class: 'sub' }, 'The VM boots with no window shown - just watch progress here. When it reaches 100%, Windows is installed and ready for winapps installation.'),
+      h('div', { class: 'sub' }, 'The VM boots with no window shown - just watch progress here. Windows ISO / VirtIO ISO download (if needed), silent install, and first-boot setup all happen automatically; it reaches 100% once Windows is installed and the guest agent responds.'),
       h('div', { id: 'progress-area' }),
       h('button', {
         class: 'btn primary',
@@ -204,6 +335,32 @@ function renderWizard() {
     ])
   ]);
   content.appendChild(page);
+}
+
+function renderMediaCard(state) {
+  const card = h('div', { class: 'card' }, [
+    h('h2', {}, 'Install media'),
+    h('div', { class: 'sub' }, "By default nothing to pick: the Windows ISO is fetched straight from Microsoft's own download servers for the edition you chose above, and the VirtIO drivers ISO from the official Fedora mirror - both cached after the first VM, so later VMs don't re-download. Expand Advanced only if you already have specific ISO files you want to use instead.")
+  ]);
+
+  const advancedBody = h('div', { style: 'display:none; margin-top:12px' });
+  const advBtn = h('button', {
+    class: 'btn small',
+    onclick: () => {
+      const showing = advancedBody.style.display !== 'none';
+      advancedBody.style.display = showing ? 'none' : 'block';
+      advBtn.textContent = showing ? 'Advanced: use my own ISO files' : 'Hide advanced options';
+    }
+  }, 'Advanced: use my own ISO files');
+
+  const winIso = isoField('Windows installer ISO (overrides auto-download)', state, 'windowsIsoPath');
+  const virtioIso = isoField('VirtIO drivers ISO (overrides auto-download)', state, 'virtioIsoPath');
+  advancedBody.appendChild(winIso);
+  advancedBody.appendChild(virtioIso);
+
+  card.appendChild(advBtn);
+  card.appendChild(advancedBody);
+  return card;
 }
 
 function field(label, inputEl) {
@@ -257,7 +414,7 @@ function isoField(label, state, key) {
 }
 
 async function startCreate(state) {
-  if (!state.windowsIsoPath || !state.virtioIsoPath) return toast('Pick both ISOs first.', true);
+  if (!state.name) return toast('Set a VM name.', true);
   if (!state.username || !state.password) return toast('Set a Windows username and password.', true);
 
   const btn = document.getElementById('create-btn');
@@ -360,154 +517,164 @@ async function renderConfig() {
 async function renderApps() {
   const page = h('div', { class: 'page' }, [
     h('h1', {}, 'Apps'),
-    h('div', { class: 'sub' }, 'Tick an app to add its launcher, untick to remove it - applied instantly, no terminal, no network needed once the catalog is cached.')
+    h('div', { class: 'sub' }, "A winboat-style icon grid, backed by WinApps' own detection under the hood (installer.sh --user) - registry scan, matching, icons and MIME types are all WinApps' real, tested logic. Nothing here is reinvented; this screen just gives it a proper UI instead of a terminal dialog.")
   ]);
-  page.style.maxWidth = '1100px';
 
   const installedCard = h('div', { class: 'card' }, [h('h2', {}, 'WinApps installation')]);
   const installed = await window.api.winapps.isInstalled();
   installedCard.appendChild(h('div', { class: 'row' }, [
     h('span', { class: 'badge ' + (installed ? 'ok' : 'warn') }, installed ? 'WinApps CLI found' : 'WinApps not installed yet'),
     installed
-      ? h('button', { class: 'btn', onclick: () => window.api.winapps.check().then(() => toast('Ran winapps check - see terminal/log for output.')) }, 'Run connectivity check')
+      ? h('button', { class: 'btn', onclick: () => window.api.winapps.check().then(() => toast('Ran winapps check - see log for output.')) }, 'Run connectivity check')
       : h('button', { class: 'btn primary', onclick: () => window.api.winapps.launchInstaller().catch((e) => toast(e.message, true)) }, 'Install WinApps now')
   ]));
   page.appendChild(installedCard);
 
-  const pickerCard = h('div', { class: 'card' });
-  pickerCard.appendChild(h('h2', {}, 'App picker'));
-  const body = h('div', {});
-  pickerCard.appendChild(body);
-  page.appendChild(pickerCard);
-  content.appendChild(page);
+  const detectCard = h('div', { class: 'card' }, [
+    h('h2', {}, 'Detect apps'),
+    h('div', { class: 'sub' }, 'Runs the real WinApps scan against the VM (a brief hidden RDP session that inventories installed programs) and refreshes the grid below. Safe to re-run any time after installing new Windows software - fully offline.')
+  ]);
+  const scopeSelect = h('select', { style: 'max-width:220px;display:inline-block;margin-right:8px' }, [
+    h('option', { value: 'user' }, 'Current user only'),
+    h('option', { value: 'system' }, 'Whole system')
+  ]);
+  const detectLog = h('div', { class: 'sub', style: 'margin-top:10px; font-family:monospace; max-height:120px; overflow-y:auto' });
+  const detectBtn = h('button', {
+    class: 'btn primary',
+    onclick: async (ev) => {
+      ev.target.disabled = true;
+      detectLog.textContent = '';
+      const unsub = window.api.winappsApps.onDetectionLine((line) => {
+        detectLog.textContent += line + '\n';
+        detectLog.scrollTop = detectLog.scrollHeight;
+      });
+      try {
+        const res = await window.api.winappsApps.runDetection(scopeSelect.value);
+        unsub();
+        if (!res.ok) throw new Error(res.error);
+        toast('App detection finished.');
+        await refreshAppGrid();
+      } catch (e) {
+        unsub();
+        toast(e.message, true);
+      } finally {
+        ev.target.disabled = false;
+      }
+    }
+  }, 'Detect apps now');
+  detectCard.appendChild(h('div', { class: 'row' }, [scopeSelect, detectBtn]));
+  detectCard.appendChild(detectLog);
+  page.appendChild(detectCard);
 
-  const cached = await window.api.apps.catalogIsCached();
-  if (!cached) {
-    renderCatalogSyncPrompt(body, false);
+  const manualCard = h('div', { class: 'card' }, [
+    h('h2', {}, 'Add an app manually'),
+    h('div', { class: 'sub' }, "For an app that isn't in WinApps' community-tested list yet. Give the full in-guest path to its .exe (per the WinApps README's \"manual\" mode).")
+  ]);
+  const manualPathInput = h('input', { type: 'text', placeholder: 'C:\\Program Files\\Some App\\app.exe', style: 'max-width:420px;display:inline-block;margin-right:8px' });
+  manualCard.appendChild(h('div', { class: 'row' }, [
+    manualPathInput,
+    h('button', {
+      class: 'btn',
+      onclick: async (ev) => {
+        if (!manualPathInput.value.trim()) return;
+        ev.target.disabled = true;
+        try {
+          await window.api.winappsApps.addManual(manualPathInput.value.trim());
+          toast('App added.');
+          manualPathInput.value = '';
+          await refreshAppGrid();
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          ev.target.disabled = false;
+        }
+      }
+    }, 'Add')
+  ]));
+  page.appendChild(manualCard);
+
+  const gridCard = h('div', { class: 'card' }, [
+    h('h2', {}, 'Detected apps'),
+    h('div', { id: 'app-grid', class: 'app-grid' }, [h('div', { class: 'sub' }, 'Loading...')])
+  ]);
+  page.appendChild(gridCard);
+
+  const previewCard = h('div', { class: 'card' }, [
+    h('h2', {}, 'Raw installed-programs list (read-only)'),
+    h('div', { class: 'sub' }, "Queries the uninstall registry over the QEMU Guest Agent directly, in case you want to see everything on the VM regardless of whether WinApps has matched it yet.")
+  ]);
+  const vmNameInput = h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:220px;display:inline-block;margin-right:8px' });
+  const results = h('div', { class: 'check-list', style: 'margin-top:12px' });
+  previewCard.appendChild(h('div', { class: 'row' }, [
+    vmNameInput,
+    h('button', { class: 'btn', onclick: async () => {
+      results.innerHTML = 'Scanning...';
+      try {
+        const apps = await window.api.apps.scan(vmNameInput.value.trim());
+        results.innerHTML = '';
+        if (!apps.length) results.appendChild(h('div', { class: 'sub' }, 'No programs found (or VM not running / guest agent not ready).'));
+        apps.forEach((a) => {
+          results.appendChild(h('div', { class: 'check-item' }, [
+            h('div', {}, [h('div', { class: 'label' }, a.name), h('div', { class: 'detail' }, a.version || '')])
+          ]));
+        });
+      } catch (e) {
+        results.innerHTML = '';
+        results.appendChild(h('div', { class: 'sub' }, 'Scan failed: ' + e.message));
+      }
+    }}, 'Scan')
+  ]));
+  previewCard.appendChild(results);
+  page.appendChild(previewCard);
+
+  content.appendChild(page);
+  await refreshAppGrid();
+}
+
+async function refreshAppGrid() {
+  const grid = document.getElementById('app-grid');
+  if (!grid) return;
+  grid.innerHTML = '';
+  let apps = [];
+  try {
+    apps = await window.api.winappsApps.list();
+  } catch (e) {
+    grid.appendChild(h('div', { class: 'sub' }, 'Could not read app list: ' + e.message));
     return;
   }
-  await renderAppGrid(body);
-}
-
-function renderCatalogSyncPrompt(container, isResync) {
-  container.innerHTML = '';
-  container.appendChild(h('div', { class: 'sub' }, isResync
-    ? 'Re-syncing pulls any newly added community apps and refreshes icons from the WinApps repo. One-time network use, then offline again.'
-    : 'First time here: this does one one-time download of app names + icons from the WinApps repo (a few hundred KB). After that, the picker works completely offline - checking/unchecking apps never touches the network again.'));
-  const progress = h('div', { class: 'sub' }, '');
-  const btn = h('button', {
-    class: 'btn primary',
-    onclick: async () => {
-      btn.disabled = true;
-      btn.textContent = 'Syncing...';
-      const off = window.api.apps.onCatalogSyncProgress((line) => (progress.textContent = line));
-      const res = await window.api.apps.catalogSync(isResync);
-      off();
-      if (!res.ok) {
-        toast('Catalog sync failed: ' + res.error, true);
-        btn.disabled = false;
-        btn.textContent = 'Retry sync';
-        return;
-      }
-      toast(`Cached ${res.apps.length} apps.`);
-      await renderAppGrid(container);
-    }
-  }, isResync ? 'Re-sync catalog' : 'Sync app catalog (one-time)');
-  container.appendChild(h('div', { class: 'row', style: 'margin-top:10px' }, [btn]));
-  container.appendChild(progress);
-}
-
-async function renderAppGrid(container) {
-  container.innerHTML = 'Loading catalog...';
-  const catalog = await window.api.apps.catalogGet();
-  const enabledSlugs = new Set(await window.api.apps.listEnabled(catalog));
-
-  container.innerHTML = '';
-
-  const toolbar = h('div', { class: 'app-toolbar' }, [
-    h('input', { class: 'app-search', type: 'text', placeholder: 'Filter apps...' }),
-    h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:180px', id: 'apps-vm-name' }),
-    h('button', { class: 'btn', id: 'apps-detect-btn' }, 'Detect installed apps'),
-    h('button', { class: 'btn', onclick: () => renderCatalogSyncPrompt(container, true) }, 'Re-sync catalog')
-  ]);
-  container.appendChild(toolbar);
-
-  const detectedNote = h('div', { class: 'sub' }, '');
-  container.appendChild(detectedNote);
-
-  const grid = h('div', { class: 'app-grid' });
-  container.appendChild(grid);
-
-  let detected = new Set();
-
-  function draw(filterText) {
-    grid.innerHTML = '';
-    const f = (filterText || '').trim().toLowerCase();
-    const visible = catalog.filter((a) => !f || a.fullName.toLowerCase().includes(f));
-    for (const app of visible) {
-      grid.appendChild(appTile(app, enabledSlugs, detected));
-    }
-    if (!visible.length) grid.appendChild(h('div', { class: 'sub' }, 'No apps match.'));
+  if (!apps.length) {
+    grid.appendChild(h('div', { class: 'sub' }, 'No apps detected yet - click "Detect apps now" above.'));
+    return;
   }
+  for (const app of apps) {
+    grid.appendChild(appTile(app));
+  }
+}
 
-  toolbar.querySelector('.app-search').addEventListener('input', (e) => draw(e.target.value));
+function appTile(app) {
+  const iconEl = app.iconDataUri
+    ? h('img', { src: app.iconDataUri, class: 'app-icon' })
+    : h('div', { class: 'app-icon app-icon-fallback' }, app.name.slice(0, 1).toUpperCase());
 
-  toolbar.querySelector('#apps-detect-btn').addEventListener('click', async () => {
-    const vmName = toolbar.querySelector('#apps-vm-name').value.trim();
-    detectedNote.textContent = 'Scanning installed programs via QEMU Guest Agent...';
+  const toggle = h('input', { type: 'checkbox' });
+  toggle.checked = !!app.enabled;
+  toggle.addEventListener('change', async () => {
+    toggle.disabled = true;
     try {
-      const installedPrograms = await window.api.apps.scan(vmName);
-      const matches = await window.api.apps.detectMatches(catalog, installedPrograms);
-      detected = new Set(matches);
-      detectedNote.textContent = `Detected ${detected.size} catalog apps installed in "${vmName}" (green dot). Checking a box is still up to you.`;
-      draw(toolbar.querySelector('.app-search').value);
+      await window.api.winappsApps.setEnabled(app.id, toggle.checked);
     } catch (e) {
-      detectedNote.textContent = 'Detection failed: ' + e.message + ' (VM not running / guest agent not ready?)';
+      toast(e.message, true);
+      toggle.checked = !toggle.checked;
+    } finally {
+      toggle.disabled = false;
     }
   });
 
-  draw('');
-}
-
-function appTile(app, enabledSlugs, detected) {
-  const enabled = enabledSlugs.has(app.slug);
-  const icon = app.iconPath
-    ? h('img', { class: 'app-icon', src: 'file://' + app.iconPath, alt: '' })
-    : h('div', { class: 'app-icon fallback' }, app.fullName.slice(0, 2).toUpperCase());
-
-  const checkbox = h('input', { type: 'checkbox', class: 'app-check' });
-  checkbox.checked = enabled;
-
-  const tile = h('div', { class: 'app-tile' + (enabled ? ' enabled' : '') }, [
-    detected.has(app.slug) ? h('div', { class: 'app-detected', title: 'Detected as installed in Windows' }) : null,
-    checkbox,
-    icon,
-    h('div', { class: 'app-name' }, app.fullName)
+  return h('div', { class: 'app-tile' }, [
+    iconEl,
+    h('div', { class: 'app-tile-name' }, app.name),
+    h('label', { class: 'app-tile-toggle' }, [toggle, ' shown in launcher'])
   ]);
-
-  const toggle = async () => {
-    const next = !checkbox.checked;
-    checkbox.checked = next;
-    tile.classList.toggle('enabled', next);
-    checkbox.disabled = true;
-    const res = next ? await window.api.apps.enable(app) : await window.api.apps.disable(app.slug);
-    checkbox.disabled = false;
-    if (!res.ok) {
-      checkbox.checked = !next;
-      tile.classList.toggle('enabled', !next);
-      toast(`Could not ${next ? 'enable' : 'disable'} ${app.fullName}: ${res.error}`, true);
-    } else {
-      next ? enabledSlugs.add(app.slug) : enabledSlugs.delete(app.slug);
-    }
-  };
-
-  // Single path for both "click the tile" and "click the checkbox": suppress
-  // the checkbox's own native toggle and drive checked/enabled state (plus
-  // the enable/disable IPC call) entirely through toggle() above.
-  checkbox.addEventListener('click', (e) => e.preventDefault());
-  tile.addEventListener('click', toggle);
-
-  return tile;
 }
 
 /* ------------------------------ DOCTOR ------------------------------ */

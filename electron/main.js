@@ -1,8 +1,9 @@
 'use strict';
 const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
+const fs = require('fs');
 
-const { ensureDirs } = require('../backend/paths');
+const { ensureDirs, VM_META_DIR } = require('../backend/paths');
 const { checkHost } = require('../backend/hostCheck');
 const { createVm } = require('../backend/vmCreate');
 const vmctl = require('../backend/vmctl');
@@ -10,8 +11,10 @@ const network = require('../backend/network');
 const winappsConfig = require('../backend/winappsConfig');
 const winappsCli = require('../backend/winappsCli');
 const appsScan = require('../backend/appsScan');
-const appsCatalog = require('../backend/appsCatalog');
-const appsManage = require('../backend/appsManage');
+const vmStats = require('../backend/vmStats');
+const vmResize = require('../backend/vmResize');
+const guestControl = require('../backend/guestControl');
+const winappsApps = require('../backend/winappsApps');
 
 let mainWindow;
 
@@ -91,35 +94,36 @@ ipcMain.handle('winapps:launchInstaller', () => winappsCli.launchInstaller());
 ipcMain.handle('winapps:launchAppRefresh', () => winappsCli.launchAppRefresh());
 ipcMain.handle('winapps:check', () => winappsCli.runCheck());
 
-// ---------- IPC: read-only installed-apps preview (guest agent, offline) ----------
+// ---------- IPC: read-only installed-apps preview ----------
 ipcMain.handle('apps:scan', (_e, vmName) => appsScan.scanInstalledApps(vmName));
 
-// ---------- IPC: in-app logo+checkbox app picker ----------
-ipcMain.handle('apps:catalog:isCached', () => appsCatalog.isCatalogCached());
-ipcMain.handle('apps:catalog:get', () => appsCatalog.getCatalog());
-ipcMain.handle('apps:catalog:sync', async (event, force) => {
+// ---------- IPC: per-VM metadata (what this manager knows about a VM it created) ----------
+ipcMain.handle('vm:meta', (_e, name) => {
+  const p = path.join(VM_META_DIR, `${name}.json`);
+  if (!fs.existsSync(p)) return null;
+  return JSON.parse(fs.readFileSync(p, 'utf8'));
+});
+
+// ---------- IPC: live VM stats (CPU/RAM/disk/network) ----------
+ipcMain.handle('vm:stats', (_e, name) => vmStats.getVmStats(name));
+
+// ---------- IPC: resize compute/storage ----------
+ipcMain.handle('vm:resizeCompute', (_e, name, opts) => vmResize.resizeCompute(name, opts));
+ipcMain.handle('vm:growDisk', (_e, name, diskPath, newSizeGiB) => vmResize.growDisk(name, diskPath, newSizeGiB));
+
+// ---------- IPC: live Defender/Updates/Firewall/bloat-services control ----------
+ipcMain.handle('guest:status', (_e, name) => guestControl.getGuestControlStatus(name));
+ipcMain.handle('guest:toggle', (_e, name, feature, enabled) => guestControl.applyToggle(name, feature, enabled));
+
+// ---------- IPC: winboat-style app picker backed by WinApps' own detection ----------
+ipcMain.handle('winappsApps:runDetection', async (event, scope) => {
   try {
-    const apps = await appsCatalog.syncCatalog((line) => event.sender.send('apps:catalog:sync:progress', line), !!force);
-    return { ok: true, apps };
+    await winappsApps.runDetection(scope, (line) => event.sender.send('winappsApps:detectionLine', line));
+    return { ok: true };
   } catch (err) {
     return { ok: false, error: err.message };
   }
 });
-ipcMain.handle('apps:enabled:list', (_e, catalog) => [...appsManage.listEnabledSlugs(catalog)]);
-ipcMain.handle('apps:enable', async (_e, app) => {
-  try {
-    return { ok: true, ...(await appsManage.enableApp(app)) };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-ipcMain.handle('apps:disable', (_e, slug) => {
-  try {
-    return { ok: true, ...appsManage.disableApp(slug) };
-  } catch (err) {
-    return { ok: false, error: err.message };
-  }
-});
-ipcMain.handle('apps:detectMatches', (_e, catalog, installedPrograms) => [
-  ...appsManage.detectCatalogMatches(catalog, installedPrograms)
-]);
+ipcMain.handle('winappsApps:list', () => winappsApps.listDetectedApps());
+ipcMain.handle('winappsApps:setEnabled', (_e, appId, enabled) => winappsApps.setAppEnabled(appId, enabled));
+ipcMain.handle('winappsApps:addManual', (_e, exePath) => winappsApps.addManualApp(exePath));
