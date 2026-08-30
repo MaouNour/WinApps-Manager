@@ -10,7 +10,7 @@
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --linux AppImage deb rpm"
+    "dist": "electron-builder --linux AppImage deb rpm --publish never"
   },
   "devDependencies": {
     "electron": "^31.0.0",
