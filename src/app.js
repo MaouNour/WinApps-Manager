@@ -355,13 +355,19 @@ function renderVmDetails(vm) {
   statsBox.appendChild(h('h3', {}, 'Live stats'));
   if (entry.stats) {
     const stats = entry.stats;
-    const memUsedMiB = Math.round((stats.memory.usedKiB || 0) / 1024);
-    const memTotalMiB = Math.round((stats.memory.availableKiB || 0) / 1024);
+    // dommemstat's "available/unused" figures come from the balloon driver
+    // inside the guest and swing around with Windows' own memory manager
+    // (standby lists, cache, etc.) - not what's actually resident on the
+    // host. rss is the qemu-system-x86_64 process's real host memory
+    // footprint, which is what "how much RAM is this VM actually using"
+    // should mean.
+    const rssMiB = Math.round((stats.memory.rssKiB || 0) / 1024);
+    const allocMiB = Math.round((stats.memory.actualKiB || 0) / 1024);
     statsBox.appendChild(h('div', { class: 'row' }, [
       h('span', { class: 'badge' }, `CPU: ${fmtPct(stats.cpuPercent)}`),
-      h('span', { class: 'badge' }, `RAM: ${memUsedMiB || '—'} / ${memTotalMiB || '—'} MiB`),
+      h('span', { class: 'badge', title: 'Host-side resident memory of the qemu process (not the guest-reported balloon figures)' }, `RAM: ${rssMiB || '—'} MiB used / ${allocMiB || '—'} MiB allocated`),
       stats.disk ? h('span', { class: 'badge' }, `Disk: ${(stats.disk.actualSizeBytes / 1e9).toFixed(1)} / ${(stats.disk.virtualSizeBytes / 1e9).toFixed(1)} GB`) : null,
-      stats.network ? h('span', { class: 'badge' }, `Net: ↓${(stats.network.rxBytes / 1e6).toFixed(1)}MB ↑${(stats.network.txBytes / 1e6).toFixed(1)}MB`) : null
+      stats.network ? h('span', { class: 'badge', title: 'Total bytes on the VM\u2019s virtual NIC - libvirt/domifstat has no way to separate RDP session traffic from anything else, so this includes the RDP session itself, not internet-only traffic' }, `Net (incl. RDP): ↓${(stats.network.rxBytes / 1e6).toFixed(1)}MB ↑${(stats.network.txBytes / 1e6).toFixed(1)}MB`) : null
     ]));
   } else if (entry.statsError) {
     statsBox.appendChild(h('div', { class: 'sub' }, 'Stats unavailable: ' + entry.statsError));
@@ -404,6 +410,26 @@ function renderVmDetails(vm) {
       }, 'Apply')
     ]));
     resizeBox.appendChild(h('div', { class: 'sub' }, 'Growing the disk only extends the virtual file - use Disk Management inside Windows afterwards to extend the NTFS volume onto the new space.'));
+    const isShutOff = vm.state === 'shut off';
+    resizeBox.appendChild(h('div', { class: 'row', style: 'margin-top:10px' }, [
+      h('button', {
+        class: 'btn small',
+        disabled: !isShutOff,
+        title: isShutOff ? '' : 'Shut the VM off first - libvirt only applies this to the saved definition, not a running VM',
+        onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            await window.api.vmExtra.applyLibvirtOptimizations(vm.name);
+            toast('Applied docs/libvirt.md CPU/clock optimizations (hyperv enlightenments, hypervclock-only timers, host-passthrough CPU). Start the VM to take effect.');
+          } catch (e) {
+            toast(e.message, true);
+          } finally {
+            ev.target.disabled = false;
+          }
+        }
+      }, 'Apply libvirt.md CPU/clock optimizations'),
+      h('span', { class: 'sub' }, 'For VMs created before this app (or by hand) that are missing the hyperv/clock tuning that keeps idle CPU near 0%. VM must be shut off.')
+    ]));
   } else {
     resizeBox.appendChild(h('div', { class: 'sub' }, entry.statsError ? 'Could not read live configuration.' : 'Loading...'));
   }
@@ -943,7 +969,19 @@ async function renderDoctor(root) {
 async function paintHostChecks(hostCard) {
   hostCard.innerHTML = '';
   hostCard.appendChild(h('div', { class: 'sub' }, 'Checking...'));
-  const { allOk, results } = await window.api.host.check();
+  let allOk = false;
+  let results = [];
+  try {
+    ({ allOk, results } = await window.api.host.check());
+  } catch (e) {
+    hostCard.innerHTML = '';
+    hostCard.appendChild(h('div', { class: 'row', style: 'margin-bottom:12px; justify-content:space-between' }, [
+      h('span', { class: 'badge bad' }, 'Setup check failed'),
+      h('button', { class: 'btn small', onclick: () => paintHostChecks(hostCard) }, 'Retry')
+    ]));
+    hostCard.appendChild(h('div', { class: 'sub' }, e.message));
+    return;
+  }
   hostCard.innerHTML = '';
   hostCard.appendChild(h('div', { class: 'row', style: 'margin-bottom:12px; justify-content:space-between' }, [
     h('span', { class: 'badge ' + (allOk ? 'ok' : 'bad') }, allOk ? 'All checks passed' : 'Some checks need attention'),

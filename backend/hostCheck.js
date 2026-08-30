@@ -12,6 +12,19 @@ const { findOvmf } = require('./paths');
  * checklist and offer a one-click fix where possible.
  */
 async function checkHost() {
+  try {
+    return await runChecks();
+  } catch (e) {
+    // Never let one unexpected failure leave the caller (Setup Check's
+    // "Checking..." screen) waiting forever with nothing to show.
+    return {
+      allOk: false,
+      results: [{ id: 'error', label: 'Setup check failed to run', ok: false, detail: e.message }]
+    };
+  }
+}
+
+async function runChecks() {
   const results = [];
   const user = os.userInfo().username;
 
@@ -68,7 +81,7 @@ async function checkHost() {
   // 4. group membership: kvm + libvirt (or libvirtd on NixOS)
   let groups = [];
   try {
-    const { stdout } = await run('groups', [user]);
+    const { stdout } = await run('groups', [user], { timeoutMs: 5000 });
     groups = stdout.replace(/^.*:\s*/, '').trim().split(/\s+/);
   } catch (_) {}
   const inKvm = groups.includes('kvm');
@@ -89,7 +102,7 @@ async function checkHost() {
   // libvirtd running
   let daemonOk = false;
   try {
-    const { stdout } = await run('systemctl', ['is-active', 'libvirtd'], { allowFail: true });
+    const { stdout } = await run('systemctl', ['is-active', 'libvirtd'], { allowFail: true, timeoutMs: 5000 });
     daemonOk = stdout.trim() === 'active';
   } catch (_) {}
   results.push({
@@ -102,7 +115,7 @@ async function checkHost() {
   // default network active
   let netOk = false;
   try {
-    const { stdout } = await run('virsh', ['net-info', 'default'], { allowFail: true });
+    const { stdout } = await run('virsh', ['net-info', 'default'], { allowFail: true, timeoutMs: 5000 });
     netOk = /Active:\s*yes/i.test(stdout);
   } catch (_) {}
   results.push({

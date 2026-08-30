@@ -73,21 +73,21 @@ async function getFirstInterfaceStats(name) {
 
 async function getFirstBlockStats(name) {
   try {
-    const { stdout: xml } = await run('virsh', ['domblklist', name], { allowFail: true });
+    const { stdout: xml } = await run('virsh', ['domblklist', name], { allowFail: true, timeoutMs: 5000 });
     const line = xml.split('\n').find((l) => /vda/.test(l));
     if (!line) return null;
     const parts = line.trim().split(/\s+/);
     const target = parts[0];
     const sourcePath = parts[1];
-    const { stdout: info } = await run('qemu-img', ['info', '--output=json', sourcePath], { allowFail: true });
-    let virtualSize = 0;
-    let actualSize = 0;
-    try {
-      const j = JSON.parse(info);
-      virtualSize = j['virtual-size'] || 0;
-      actualSize = j['actual-size'] || 0;
-    } catch (_) {}
-    return { target, path: sourcePath, virtualSizeBytes: virtualSize, actualSizeBytes: actualSize };
+    // domblkinfo goes through libvirtd (which runs as root and already has
+    // the disk open), so it works even when the image file itself isn't
+    // readable by the user's own account - unlike shelling out to
+    // `qemu-img info` directly on the path, which silently failed for
+    // exactly that reason and is why Disk always showed 0.0/0.0 GB.
+    const { stdout: info } = await run('virsh', ['domblkinfo', name, target], { allowFail: true, timeoutMs: 5000 });
+    const capacity = Number((info.match(/^Capacity:\s*(\d+)/m) || [])[1] || 0);
+    const allocation = Number((info.match(/^Allocation:\s*(\d+)/m) || [])[1] || 0);
+    return { target, path: sourcePath, virtualSizeBytes: capacity, actualSizeBytes: allocation };
   } catch (_) {
     return null;
   }

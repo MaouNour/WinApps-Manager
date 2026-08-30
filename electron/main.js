@@ -140,6 +140,7 @@ ipcMain.handle('host:stats', () => hostStats.getHostStats());
 // ---------- IPC: resize compute/storage ----------
 ipcMain.handle('vm:resizeCompute', (_e, name, opts) => vmResize.resizeCompute(name, opts));
 ipcMain.handle('vm:growDisk', (_e, name, diskPath, newSizeGiB) => vmResize.growDisk(name, diskPath, newSizeGiB));
+ipcMain.handle('vm:applyLibvirtOptimizations', (_e, name) => vmctl.applyLibvirtOptimizations(name));
 
 // ---------- IPC: live Defender/Updates/Firewall/bloat-services control ----------
 ipcMain.handle('guest:status', (_e, name) => guestControl.getGuestControlStatus(name));

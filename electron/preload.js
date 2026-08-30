@@ -47,7 +47,8 @@ contextBridge.exposeInMainWorld('api', {
     stats: (name) => ipcRenderer.invoke('vm:stats', name),
     config: (name) => ipcRenderer.invoke('vm:config', name),
     resizeCompute: (name, opts) => ipcRenderer.invoke('vm:resizeCompute', name, opts),
-    growDisk: (name, diskPath, newSizeGiB) => ipcRenderer.invoke('vm:growDisk', name, diskPath, newSizeGiB)
+    growDisk: (name, diskPath, newSizeGiB) => ipcRenderer.invoke('vm:growDisk', name, diskPath, newSizeGiB),
+    applyLibvirtOptimizations: (name) => ipcRenderer.invoke('vm:applyLibvirtOptimizations', name)
   },
   guest: {
     status: (name) => ipcRenderer.invoke('guest:status', name),
