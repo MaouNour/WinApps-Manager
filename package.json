@@ -1,12 +1,54 @@
 {
   "name": "winapps-manager",
   "version": "0.1.0",
-  "description": "GUI to create and manage WinApps libvirt Windows VMs (VM creation, winapps.conf editing, app picker, quick actions).",
+  "description": "GUI to create and manage WinApps libvirt Windows VMs.",
+  "license": "MIT",
+  "author": "MaouNour",
   "main": "electron/main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "electron-builder --linux AppImage deb rpm"
   },
   "dependencies": {
     "electron": "^31.0.0"
+  },
+  "devDependencies": {
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.maounour.winapps-manager",
+    "productName": "WinApps Manager",
+    "files": [
+      "electron/**/*",
+      "backend/**/*",
+      "src/**/*",
+      "resources/**/*",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb",
+        "rpm"
+      ],
+      "category": "System",
+      "artifactName": "winapps-manager-${version}-${arch}.${ext}"
+    },
+    "deb": {
+      "depends": [
+        "virt-manager",
+        "qemu-utils",
+        "libvirt-clients",
+        "libvirt-daemon-system"
+      ]
+    },
+    "rpm": {
+      "depends": [
+        "virt-manager",
+        "qemu-img",
+        "libvirt-client",
+        "libvirt-daemon"
+      ]
+    }
   }
 }
