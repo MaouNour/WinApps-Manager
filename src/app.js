@@ -114,7 +114,7 @@ async function pollHostStats() {
     // Host stats are a nice-to-have - never surface a toast for this.
   }
 }
-setInterval(pollHostStats, 2000);
+setInterval(pollHostStats, 3000);
 pollHostStats();
 
 /* ---------------------------- DASHBOARD ---------------------------- */
@@ -150,7 +150,7 @@ async function pollDashboard() {
   }
   paintDashboard();
 }
-setInterval(pollDashboard, 4000);
+setInterval(pollDashboard, 5000);
 
 function renderDashboard(root) {
   root.appendChild(
@@ -279,7 +279,7 @@ function startDetailsAutoRefresh(vmName) {
     await refreshVmDetailsData(vmName, { full: false });
     const vm = (dash.vms || []).find((v) => v.name === vmName);
     if (vm) rerenderVmDetailsIfOpen(vm);
-  }, 3000);
+  }, 5000);
 }
 
 function stopDetailsAutoRefresh(vmName) {
@@ -302,22 +302,33 @@ function rerenderVmDetailsIfOpen(vm) {
   detailsArea.appendChild(renderVmDetails(vm));
 }
 
-/** Fetches fresh stats/config (always) and, if `full`, also guest status. Fills the cache. */
+/**
+ * Fetches fresh data and fills the cache. Three tiers, to avoid spawning
+ * far more subprocesses than needed every tick:
+ *  - `full`   (only on first expand): stats + config + guest status. The
+ *             config read (virsh dumpxml + qemu-img info) and the guest
+ *             status read (a PowerShell script over the guest agent) are
+ *             both relatively slow/heavy and essentially static between
+ *             ticks, so they only run once per expand, not on a timer.
+ *  - default  (the 5s auto-refresh while a panel stays open): live stats
+ *             only (CPU/RAM/disk/net) - config and guest status are left
+ *             as-is from the last full fetch.
+ */
 async function refreshVmDetailsData(vmName, { full }) {
   if (!dash.details[vmName]) dash.details[vmName] = {};
   const entry = dash.details[vmName];
   try {
-    const [stats, config] = await Promise.all([
-      window.api.vmExtra.stats(vmName),
-      window.api.vmExtra.config(vmName)
-    ]);
-    entry.stats = stats;
-    entry.config = config;
+    entry.stats = await window.api.vmExtra.stats(vmName);
     entry.statsAt = Date.now();
   } catch (e) {
     entry.statsError = e.message;
   }
   if (full) {
+    try {
+      entry.config = await window.api.vmExtra.config(vmName);
+    } catch (e) {
+      entry.statsError = entry.statsError || e.message;
+    }
     try {
       entry.guestStatus = await window.api.guest.status(vmName);
       entry.guestError = null;

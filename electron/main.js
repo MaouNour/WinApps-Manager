@@ -19,6 +19,24 @@ const hostStats = require('../backend/hostStats');
 
 let mainWindow;
 
+// Without this, launching `npm start` a second time (e.g. once left running
+// from earlier, then started again) spins up a whole second copy of every
+// background poller (host stats, dashboard, per-VM details) - CPU load
+// multiplies with each extra copy and never comes back down on its own,
+// since nothing ever tells the older instance to stop. Enforce a single
+// instance and just focus the existing window instead.
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1180,
@@ -35,6 +53,7 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, '..', 'src', 'index.html'));
 }
 
+if (gotLock) {
 app.whenReady().then(() => {
   ensureDirs();
   createWindow();
@@ -46,6 +65,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
+} // end if (gotLock)
 
 // ---------- IPC: host checks ----------
 ipcMain.handle('host:check', () => checkHost());

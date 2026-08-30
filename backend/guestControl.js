@@ -136,7 +136,12 @@ Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name DragFullWindows -Va
 Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop\\WindowMetrics' -Name MinAnimate -Value 0
 # No hibernation file (irrelevant for a VM, frees disk, one less background task)
 powercfg /hibernate off
-powercfg /setactive SCHEME_MIN 2>$null
+# Balanced, not High Performance (SCHEME_MIN): forcing the guest vCPU to
+# stay boosted fights the host for the same thermal/power budget on a
+# laptop, which tends to make things feel slower overall, not faster,
+# once the host is also under load. Balanced still lets it clock up under
+# real load without pinning it there constantly.
+powercfg /setactive SCHEME_BALANCED 2>$null
 # Storage Sense off (no need to auto-clean a VM disk)
 New-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\StorageSense\\Parameters\\StoragePolicy' -Force | Out-Null
 Set-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\StorageSense\\Parameters\\StoragePolicy' -Name '01' -Value 0 -Type DWord
