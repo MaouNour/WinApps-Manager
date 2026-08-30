@@ -61,7 +61,8 @@ contextBridge.exposeInMainWorld('api', {
   guest: {
     status: (name) => ipcRenderer.invoke('guest:status', name),
     toggle: (name, feature, enabled) => ipcRenderer.invoke('guest:toggle', name, feature, enabled),
-    applyRecommended: (name) => ipcRenderer.invoke('guest:applyRecommended', name)
+    applyRecommended: (name) => ipcRenderer.invoke('guest:applyRecommended', name),
+    applyRemoteAppOnlyPreset: (name) => ipcRenderer.invoke('guest:applyRemoteAppOnlyPreset', name)
   },
   winappsApps: {
     runDetection: (scope) => ipcRenderer.invoke('winappsApps:runDetection', scope),

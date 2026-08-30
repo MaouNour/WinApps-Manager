@@ -171,6 +171,7 @@ ipcMain.handle('vm:applyLibvirtOptimizations', (_e, name) => vmctl.applyLibvirtO
 ipcMain.handle('guest:status', (_e, name) => guestControl.getGuestControlStatus(name));
 ipcMain.handle('guest:toggle', (_e, name, feature, enabled) => guestControl.applyToggle(name, feature, enabled));
 ipcMain.handle('guest:applyRecommended', (_e, name) => guestControl.applyRecommended(name));
+ipcMain.handle('guest:applyRemoteAppOnlyPreset', (_e, name) => guestControl.applyRemoteAppOnlyPreset(name));
 
 // ---------- IPC: winboat-style app picker backed by WinApps' own detection ----------
 ipcMain.handle('winappsApps:runDetection', async (event, scope) => {

@@ -522,7 +522,15 @@ function renderVmDetails(vm) {
     ['updates', 'Windows Update', 'updatesDisabled'],
     ['firewall', 'Windows Firewall', 'firewallDisabled'],
     ['performance', 'Optimize for performance (visual effects, power plan, hibernation)', 'performanceDisabled'],
-    ['bloat', 'Background bloat services/tasks', 'bloatDisabled']
+    ['bloat', 'Background bloat services/tasks', 'bloatDisabled'],
+    ['search', 'Windows Search indexing (search box itself still works - see tooltip)', 'searchDisabled',
+      'Turns off the background file-content indexer (SearchIndexer.exe), the actual idle CPU/disk/RAM cost. The taskbar/Start search box is a separate component that keeps answering app-launcher queries from its own local cache either way - that\u2019s normal, not this setting failing to apply.'],
+    ['onedrive', 'OneDrive background sync', 'onedriveDisabled'],
+    ['widgetsCopilot', 'Widgets & Copilot (taskbar)', 'widgetsCopilotDisabled'],
+    ['shellExtras', 'Explorer extras (AutoPlay, image acquisition, recent-file tracking)', 'shellExtrasDisabled'],
+    ['printSpooler', 'Print Spooler (only if you never print)', 'printSpoolerDisabled'],
+    ['headlessShell', 'Headless mode (block Task Manager & Settings, disable Game Bar/Spotlight)', 'headlessShellDisabled',
+      'Blocks Task Manager, Control Panel and Settings from launching at all, and turns off Game Bar/Game DVR and Spotlight/Start suggestions. Doesn\u2019t touch the shell itself (explorer.exe) - RemoteApp launches already never show a desktop/taskbar, this just locks down what\u2019s reachable if you do open a full desktop session.']
   ];
 
   if (entry.guestStatus) {
@@ -532,10 +540,10 @@ function renderVmDetails(vm) {
         'Defender Tamper Protection is ON in this VM - Microsoft blocks scripted changes to Defender while it\u2019s on. Turn it off by hand first: Windows Security \u2192 Virus & threat protection \u2192 Manage settings \u2192 Tamper Protection.'));
     }
     const list = h('div', { class: 'check-list' });
-    for (const [feature, label, statusKey] of FEATURES) {
+    for (const [feature, label, statusKey, hint] of FEATURES) {
       const disabled = !!status[statusKey];
       const item = h('div', { class: 'check-item' }, [
-        h('div', {}, [h('div', { class: 'label' }, label)]),
+        h('div', {}, [h('div', hint ? { class: 'label', title: hint } : { class: 'label' }, label)]),
         h('div', { class: 'row' }, [
           h('span', { class: 'badge ' + (disabled ? 'warn' : 'ok') }, disabled ? 'disabled' : 'enabled'),
           h('button', {
@@ -543,8 +551,18 @@ function renderVmDetails(vm) {
             onclick: async (ev) => {
               ev.target.disabled = true;
               try {
-                await window.api.guest.toggle(vm.name, feature, disabled /* enable if currently disabled */);
-                toast(`${label} ${disabled ? 'enabled' : 'disabled'}.`);
+                const result = await window.api.guest.toggle(vm.name, feature, disabled /* enable if currently disabled */);
+                // The apply script itself verifies the change actually
+                // stuck (see guestControl.js) and reports a distinct
+                // "-failed" string when it didn't - surface that instead
+                // of a blind "success" toast, since a toggle that silently
+                // no-ops but still claims success is worse than no toggle
+                // at all.
+                if (typeof result === 'string' && result.includes('failed')) {
+                  toast(`${label}: change did not stick (${result}). It may need Tamper Protection or a similar guard turned off by hand first.`, true);
+                } else {
+                  toast(`${label} ${disabled ? 'enabled' : 'disabled'}.`);
+                }
                 await refreshVmDetailsData(vm.name, { full: true });
                 rerenderVmDetailsIfOpen(vm);
               } catch (e) {
@@ -560,24 +578,42 @@ function renderVmDetails(vm) {
     }
     guestBox.appendChild(list);
 
-    guestBox.appendChild(h('button', {
-      class: 'btn primary',
-      style: 'margin-top:10px',
-      onclick: async (ev) => {
-        ev.target.disabled = true;
-        try {
-          await window.api.guest.applyRecommended(vm.name);
-          toast('Applied recommended WinApps settings (Defender, Updates, background bloat, performance mode disabled).');
-          await refreshVmDetailsData(vm.name, { full: true });
-          rerenderVmDetailsIfOpen(vm);
-        } catch (e) {
-          toast(e.message, true);
-        } finally {
-          ev.target.disabled = false;
+    guestBox.appendChild(h('div', { class: 'row', style: 'margin-top:10px; gap:8px' }, [
+      h('button', {
+        class: 'btn primary',
+        onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            await window.api.guest.applyRecommended(vm.name);
+            toast('Applied recommended WinApps settings (Defender, Updates, background bloat, performance mode disabled).');
+            await refreshVmDetailsData(vm.name, { full: true });
+            rerenderVmDetailsIfOpen(vm);
+          } catch (e) {
+            toast(e.message, true);
+          } finally {
+            ev.target.disabled = false;
+          }
         }
-      }
-    }, 'Apply recommended WinApps optimizations'));
-    guestBox.appendChild(h('div', { class: 'sub' }, 'Firewall is left as-is by the recommended preset; toggle it separately above if you want it off too.'));
+      }, 'Apply recommended WinApps optimizations'),
+      h('button', {
+        class: 'btn',
+        title: 'Only use this if you exclusively launch individual apps through WinApps (RemoteApp mode) and never open a full Windows desktop session on this VM.',
+        onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            await window.api.guest.applyRemoteAppOnlyPreset(vm.name);
+            toast('Applied RemoteApp-only ultra-lite preset (adds Search, OneDrive, Widgets/Copilot, Explorer extras, and Headless mode on top of the recommended set).');
+            await refreshVmDetailsData(vm.name, { full: true });
+            rerenderVmDetailsIfOpen(vm);
+          } catch (e) {
+            toast(e.message, true);
+          } finally {
+            ev.target.disabled = false;
+          }
+        }
+      }, 'Apply RemoteApp-only ultra-lite preset')
+    ]));
+    guestBox.appendChild(h('div', { class: 'sub' }, 'Firewall and Print Spooler are left as-is by both presets - toggle them individually above if you want them off too. The ultra-lite preset targets desktop-shell-only overhead (search indexing, OneDrive, Widgets/Copilot, Explorer tracking, Task Manager/Settings/Game Bar/Spotlight) that per-app RemoteApp sessions never touch anyway - safe even if you sometimes still open a full desktop, just less needed then. Headless mode does not remove the desktop shell itself - see its tooltip above for why.'));
   } else if (entry.guestError) {
     guestBox.appendChild(h('div', { class: 'sub' }, 'Could not read guest status (VM must be running with the guest agent up): ' + entry.guestError));
   } else {
