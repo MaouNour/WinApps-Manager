@@ -239,5 +239,8 @@ ipcMain.handle('appsCatalog:detectMatches', async (_e, vmName) => {
   const catalog = appsCatalog.getCatalog() || [];
   const installed = await appsScan.scanInstalledApps(vmName);
   const matched = appsManage.detectCatalogMatches(catalog, installed);
-  return [...matched];
+  // installedCount lets the UI say *why* it found 0 matches - an empty
+  // guest scan (wrong/stale VM name, guest agent not ready) looks very
+  // different from a real scan that just has no catalog overlap.
+  return { matched: [...matched], installedCount: installed.length };
 });

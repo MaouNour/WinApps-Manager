@@ -943,11 +943,22 @@ async function renderApps(root) {
     }
   }
 
+  // Two separate fields (top card + raw-preview card below), kept in sync
+  // via a shared getter/setter instead of one shared DOM node - moving one
+  // <input> between two cards isn't possible (appendChild relocates it, it
+  // wouldn't render in both places). Previously these were two fully
+  // independent inputs that happened to share the same default text, so it
+  // was easy to end up scanning two different VM names without noticing -
+  // now editing either one updates the other.
+  const vmNameInput = h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:220px;display:inline-block;margin-right:8px' });
+  const vmNameInput2 = h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:220px;display:inline-block;margin-right:8px' });
+  vmNameInput.addEventListener('input', () => { vmNameInput2.value = vmNameInput.value; });
+  vmNameInput2.addEventListener('input', () => { vmNameInput.value = vmNameInput2.value; });
+
   const matchCard = h('div', { class: 'card' }, [
     h('h2', {}, 'Match against a running VM (optional)'),
     h('div', { class: 'sub' }, "Scans installed programs over the QEMU Guest Agent and flags which catalog apps look installed on the VM - purely informational, doesn't restrict what you can enable.")
   ]);
-  const vmNameInput = h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:220px;display:inline-block;margin-right:8px' });
   matchCard.appendChild(h('div', { class: 'row' }, [
     vmNameInput,
     h('button', {
@@ -955,9 +966,16 @@ async function renderApps(root) {
       onclick: async (ev) => {
         ev.target.disabled = true;
         try {
-          const matched = await window.api.appsCatalog.detectMatches(vmNameInput.value.trim());
+          const { matched, installedCount } = await window.api.appsCatalog.detectMatches(vmNameInput.value.trim());
           highlightMatches(matched);
-          toast(`${matched.length} catalog app(s) look installed on that VM.`);
+          if (installedCount === 0) {
+            // The guest scan itself came back empty - report that distinctly
+            // instead of a bare "0 matches", since that's almost always a
+            // VM-name/guest-agent problem rather than "nothing overlaps".
+            toast('Scanned 0 installed programs on that VM - check the VM name above and that it is running with the guest agent ready.', true);
+          } else {
+            toast(`Scanned ${installedCount} installed program(s); ${matched.length} catalog app(s) look installed on that VM.`);
+          }
         } catch (e) {
           toast(e.message, true);
         } finally {
@@ -1007,7 +1025,6 @@ async function renderApps(root) {
     h('h2', {}, 'Raw installed-programs list (read-only)'),
     h('div', { class: 'sub' }, "Queries the uninstall registry over the QEMU Guest Agent directly, in case you want to see everything on the VM regardless of whether it's in the catalog.")
   ]);
-  const vmNameInput2 = h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:220px;display:inline-block;margin-right:8px' });
   const results = h('div', { class: 'check-list', style: 'margin-top:12px' });
   previewCard.appendChild(h('div', { class: 'row' }, [
     vmNameInput2,

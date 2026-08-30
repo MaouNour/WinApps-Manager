@@ -96,16 +96,29 @@ async function setAppEnabled(app, enabled) {
  * show a "detected in Windows" badge - purely informational, doesn't
  * restrict which boxes can be checked (matches winboat's approach of
  * always letting you pick, since detection is best-effort name matching).
+ *
+ * Two bugs fixed here (this used to always report 0 matches for a lot of
+ * real installs):
+ *  - Only `app.name` (WinApps' short "GNOME shortcut name", e.g. "Access")
+ *    was checked. `app.fullName` (e.g. "Microsoft Access") is often the one
+ *    that actually resembles the registry DisplayName - now both are tried.
+ *  - A catalog/installed entry with a very short or empty normalized name
+ *    (e.g. a stray registry entry with no real DisplayName) made
+ *    `needle.includes(hay)` trivially true for every other app, since an
+ *    empty/1-2 char string is a substring of almost anything. Both sides
+ *    now require at least 3 normalized characters before they're eligible
+ *    to match at all.
  */
 function detectCatalogMatches(catalog, installedPrograms) {
-  const normalizedInstalled = installedPrograms.map((p) => normalize(p.name));
+  const normalizedInstalled = installedPrograms
+    .map((p) => normalize(p.name))
+    .filter((hay) => hay.length >= 3);
   const matched = new Set();
   for (const app of catalog) {
-    const needle = normalize(app.name);
-    if (!needle) continue;
-    if (normalizedInstalled.some((hay) => hay.includes(needle) || needle.includes(hay))) {
-      matched.add(app.slug);
-    }
+    const needles = [normalize(app.name), normalize(app.fullName)].filter((n) => n.length >= 3);
+    if (!needles.length) continue;
+    const isMatch = normalizedInstalled.some((hay) => needles.some((needle) => hay.includes(needle) || needle.includes(hay)));
+    if (isMatch) matched.add(app.slug);
   }
   return matched;
 }

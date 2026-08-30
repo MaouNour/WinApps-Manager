@@ -10,7 +10,7 @@
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --linux AppImage deb rpm --publish never"
+    "dist": "electron-builder --linux AppImage deb rpm pacman --publish never"
   },
   "devDependencies": {
     "electron": "^31.0.0",
@@ -19,6 +19,7 @@
   "build": {
     "appId": "com.maounour.winapps-manager",
     "productName": "WinApps Manager",
+    "executableName": "winapps-manager",
     "files": [
       "electron/**/*",
       "backend/**/*",
@@ -26,11 +27,18 @@
       "resources/**/*",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "resources/scripts/setup-network-sudo.sh",
+        "to": "scripts/setup-network-sudo.sh"
+      }
+    ],
     "linux": {
       "target": [
         "AppImage",
         "deb",
-        "rpm"
+        "rpm",
+        "pacman"
       ],
       "category": "System",
       "artifactName": "winapps-manager-${version}-${arch}.${ext}"
@@ -41,7 +49,9 @@
         "qemu-utils",
         "libvirt-clients",
         "libvirt-daemon-system"
-      ]
+      ],
+      "afterInstall": "resources/scripts/pkg-postinstall.sh",
+      "afterRemove": "resources/scripts/pkg-postremove.sh"
     },
     "rpm": {
       "depends": [
@@ -49,7 +59,18 @@
         "qemu-img",
         "libvirt-client",
         "libvirt-daemon"
-      ]
+      ],
+      "afterInstall": "resources/scripts/pkg-postinstall.sh",
+      "afterRemove": "resources/scripts/pkg-postremove.sh"
+    },
+    "pacman": {
+      "depends": [
+        "virt-manager",
+        "qemu-img",
+        "libvirt"
+      ],
+      "afterInstall": "resources/scripts/pkg-postinstall.sh",
+      "afterRemove": "resources/scripts/pkg-postremove.sh"
     }
   }
 }

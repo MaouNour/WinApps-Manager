@@ -54,6 +54,7 @@ jobs:
             dist/*.AppImage
             dist/*.deb
             dist/*.rpm
+            dist/*.pacman
           if-no-files-found: error
 
       - name: Create GitHub Release
@@ -64,5 +65,6 @@ jobs:
             dist/*.AppImage
             dist/*.deb
             dist/*.rpm
+            dist/*.pacman
           generate_release_notes: true
           fail_on_unmatched_files: true
