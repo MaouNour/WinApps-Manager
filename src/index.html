@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+<title>WinApps Manager</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <nav class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">W</div>
+        <div class="brand-text">WinApps<br/>Manager</div>
+      </div>
+      <button class="nav-btn active" data-page="dashboard">Dashboard</button>
+      <button class="nav-btn" data-page="wizard">New VM</button>
+      <button class="nav-btn" data-page="config">winapps.conf</button>
+      <button class="nav-btn" data-page="apps">Apps</button>
+      <button class="nav-btn" data-page="doctor">Setup Check</button>
+      <div class="sidebar-footer">libvirt backend</div>
+    </nav>
+    <main class="content" id="content">
+      <!-- pages injected by app.js -->
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

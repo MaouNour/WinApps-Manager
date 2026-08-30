@@ -1,0 +1,12 @@
+{
+  "name": "winapps-manager",
+  "version": "0.1.0",
+  "description": "GUI to create and manage WinApps libvirt Windows VMs (VM creation, winapps.conf editing, app picker, quick actions).",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "^31.0.0"
+  }
+}
