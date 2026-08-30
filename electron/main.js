@@ -10,6 +10,8 @@ const network = require('../backend/network');
 const winappsConfig = require('../backend/winappsConfig');
 const winappsCli = require('../backend/winappsCli');
 const appsScan = require('../backend/appsScan');
+const appsCatalog = require('../backend/appsCatalog');
+const appsManage = require('../backend/appsManage');
 
 let mainWindow;
 
@@ -89,5 +91,35 @@ ipcMain.handle('winapps:launchInstaller', () => winappsCli.launchInstaller());
 ipcMain.handle('winapps:launchAppRefresh', () => winappsCli.launchAppRefresh());
 ipcMain.handle('winapps:check', () => winappsCli.runCheck());
 
-// ---------- IPC: read-only installed-apps preview ----------
+// ---------- IPC: read-only installed-apps preview (guest agent, offline) ----------
 ipcMain.handle('apps:scan', (_e, vmName) => appsScan.scanInstalledApps(vmName));
+
+// ---------- IPC: in-app logo+checkbox app picker ----------
+ipcMain.handle('apps:catalog:isCached', () => appsCatalog.isCatalogCached());
+ipcMain.handle('apps:catalog:get', () => appsCatalog.getCatalog());
+ipcMain.handle('apps:catalog:sync', async (event, force) => {
+  try {
+    const apps = await appsCatalog.syncCatalog((line) => event.sender.send('apps:catalog:sync:progress', line), !!force);
+    return { ok: true, apps };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+ipcMain.handle('apps:enabled:list', (_e, catalog) => [...appsManage.listEnabledSlugs(catalog)]);
+ipcMain.handle('apps:enable', async (_e, app) => {
+  try {
+    return { ok: true, ...(await appsManage.enableApp(app)) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+ipcMain.handle('apps:disable', (_e, slug) => {
+  try {
+    return { ok: true, ...appsManage.disableApp(slug) };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+ipcMain.handle('apps:detectMatches', (_e, catalog, installedPrograms) => [
+  ...appsManage.detectCatalogMatches(catalog, installedPrograms)
+]);

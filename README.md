@@ -69,19 +69,30 @@ line, and field order in your file is left untouched. Every field from your
 file is editable here.
 
 ### Apps
-WinApps already ships its own app-detection wizard, `winapps-setup`
-(installed by `setup.sh`), which scans the Windows registry, matches
-"community-tested" apps with proper icons/MIME types, and gives you a
-checkbox picker. Rather than re-implementing that (and risking a picker
-that's out of sync with WinApps' actual desktop-entry format), this screen
-launches WinApps' own installer/picker in a terminal window - that's the
-"Install WinApps now" / "Refresh app list" buttons. Both work fully offline
-once WinApps itself is installed.
+A real in-app logo+checkbox picker (`backend/appsCatalog.js` +
+`backend/appsManage.js`), not a terminal launcher:
 
-What *is* custom here: a read-only "installed programs" preview
-(`backend/appsScan.js`) that queries the Windows uninstall registry over the
-QEMU Guest Agent (`virsh qemu-agent-command`, no RDP/network needed) just so
-you can glance at what's on the VM before opening the picker.
+- **Catalog sync** (`appsCatalog.js`) - a one-time (or explicit re-run)
+  fetch of the `apps/` folder from the WinApps repo: each app's `info` file
+  (name/categories/MIME types) and `icon.svg` are cached to
+  `~/.local/share/winapps-manager/app-catalog/`. This is the *only* network
+  use anywhere in the Apps screen, and it's opt-in and one-time - after that
+  the picker is 100% offline, same pattern as the existing OEM-file caching
+  used during VM creation.
+- **Enable/disable** (`appsManage.js`) - ticking a box writes
+  `~/.local/share/applications/<slug>.desktop` plus an executable
+  `~/.local/bin/<slug>` wrapper that calls `winapps <slug>`; unticking
+  removes both. This is byte-for-byte what WinApps' own installer does when
+  you tick a box in its terminal wizard (`Exec=<bin>/winapps <slug> %F`,
+  `Icon=`, `Categories=`, `MimeType=` all populated from the cached `info`
+  file) - just triggered by a click instead of a `dialog` TUI.
+  "Windows (Full RDP Session)" is always included as its own tile, matching
+  the repo's README app table.
+- **Detection** - a "Detect installed apps" button re-runs the existing
+  guest-agent registry scan (`appsScan.js`, still offline/no-RDP) and
+  fuzzy-matches installed program names against the catalog, showing a green
+  dot on tiles that look installed. Purely informational - every tile stays
+  checkable regardless, since detection is best-effort name matching.
 
 ### Dashboard - quick actions
 Directly implements the aliases you described, with the VM name substituted
@@ -101,6 +112,9 @@ per row instead of hardcoded:
 This is a first full pass, not the finished product - flagging what's
 scaffolded vs. what needs another iteration:
 
+- **ISO auto-downloader** - the wizard's ISO fields are still local-file-only
+  (browse to a Windows ISO and a VirtIO ISO you already downloaded). An
+  in-app "download instead" option for both is the next gap to close.
 - **CPU pinning picker UI** - the backend (`libvirtXml.js`) already accepts
   `cpuPinning`/`topology`, but the wizard doesn't have the `lscpu -e`-driven
   picker from the docs' "Optional: Assign Specific Physical CPU Cores"

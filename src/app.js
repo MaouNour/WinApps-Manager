@@ -360,8 +360,9 @@ async function renderConfig() {
 async function renderApps() {
   const page = h('div', { class: 'page' }, [
     h('h1', {}, 'Apps'),
-    h('div', { class: 'sub' }, 'WinApps ships its own app-detection wizard (winapps-setup), which already scans the registry, matches community-tested apps with proper icons/MIME types, and lets you check/uncheck what gets a launcher. This screen launches that wizard directly - no network needed once WinApps is installed.')
+    h('div', { class: 'sub' }, 'Tick an app to add its launcher, untick to remove it - applied instantly, no terminal, no network needed once the catalog is cached.')
   ]);
+  page.style.maxWidth = '1100px';
 
   const installedCard = h('div', { class: 'card' }, [h('h2', {}, 'WinApps installation')]);
   const installed = await window.api.winapps.isInstalled();
@@ -373,45 +374,140 @@ async function renderApps() {
   ]));
   page.appendChild(installedCard);
 
-  const refreshCard = h('div', { class: 'card' }, [
-    h('h2', {}, 'Manage which apps get a launcher'),
-    h('div', { class: 'sub' }, 'Opens the official checkbox picker in a terminal window. Run it again any time after installing a new Windows app.'),
-    h('button', {
-      class: 'btn primary',
-      onclick: () => window.api.winapps.launchAppRefresh().then(() => toast('Opened the WinApps app picker.')).catch((e) => toast(e.message, true))
-    }, 'Refresh app list')
-  ]);
-  page.appendChild(refreshCard);
-
-  const previewCard = h('div', { class: 'card' }, [
-    h('h2', {}, 'Installed programs (read-only preview)'),
-    h('div', { class: 'sub' }, 'Queries the registry inside the VM over the QEMU Guest Agent, purely so you can see what\'s installed before opening the picker above. VM name below defaults to VM_NAME from winapps.conf.')
-  ]);
-  const vmNameInput = h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:220px;display:inline-block;margin-right:8px' });
-  const results = h('div', { class: 'check-list', style: 'margin-top:12px' });
-  previewCard.appendChild(h('div', { class: 'row' }, [
-    vmNameInput,
-    h('button', { class: 'btn', onclick: async () => {
-      results.innerHTML = 'Scanning...';
-      try {
-        const apps = await window.api.apps.scan(vmNameInput.value.trim());
-        results.innerHTML = '';
-        if (!apps.length) results.appendChild(h('div', { class: 'sub' }, 'No programs found (or VM not running / guest agent not ready).'));
-        apps.forEach((a) => {
-          results.appendChild(h('div', { class: 'check-item' }, [
-            h('div', {}, [h('div', { class: 'label' }, a.name), h('div', { class: 'detail' }, a.version || '')])
-          ]));
-        });
-      } catch (e) {
-        results.innerHTML = '';
-        results.appendChild(h('div', { class: 'sub' }, 'Scan failed: ' + e.message));
-      }
-    }}, 'Scan')
-  ]));
-  previewCard.appendChild(results);
-  page.appendChild(previewCard);
-
+  const pickerCard = h('div', { class: 'card' });
+  pickerCard.appendChild(h('h2', {}, 'App picker'));
+  const body = h('div', {});
+  pickerCard.appendChild(body);
+  page.appendChild(pickerCard);
   content.appendChild(page);
+
+  const cached = await window.api.apps.catalogIsCached();
+  if (!cached) {
+    renderCatalogSyncPrompt(body, false);
+    return;
+  }
+  await renderAppGrid(body);
+}
+
+function renderCatalogSyncPrompt(container, isResync) {
+  container.innerHTML = '';
+  container.appendChild(h('div', { class: 'sub' }, isResync
+    ? 'Re-syncing pulls any newly added community apps and refreshes icons from the WinApps repo. One-time network use, then offline again.'
+    : 'First time here: this does one one-time download of app names + icons from the WinApps repo (a few hundred KB). After that, the picker works completely offline - checking/unchecking apps never touches the network again.'));
+  const progress = h('div', { class: 'sub' }, '');
+  const btn = h('button', {
+    class: 'btn primary',
+    onclick: async () => {
+      btn.disabled = true;
+      btn.textContent = 'Syncing...';
+      const off = window.api.apps.onCatalogSyncProgress((line) => (progress.textContent = line));
+      const res = await window.api.apps.catalogSync(isResync);
+      off();
+      if (!res.ok) {
+        toast('Catalog sync failed: ' + res.error, true);
+        btn.disabled = false;
+        btn.textContent = 'Retry sync';
+        return;
+      }
+      toast(`Cached ${res.apps.length} apps.`);
+      await renderAppGrid(container);
+    }
+  }, isResync ? 'Re-sync catalog' : 'Sync app catalog (one-time)');
+  container.appendChild(h('div', { class: 'row', style: 'margin-top:10px' }, [btn]));
+  container.appendChild(progress);
+}
+
+async function renderAppGrid(container) {
+  container.innerHTML = 'Loading catalog...';
+  const catalog = await window.api.apps.catalogGet();
+  const enabledSlugs = new Set(await window.api.apps.listEnabled(catalog));
+
+  container.innerHTML = '';
+
+  const toolbar = h('div', { class: 'app-toolbar' }, [
+    h('input', { class: 'app-search', type: 'text', placeholder: 'Filter apps...' }),
+    h('input', { type: 'text', value: 'RDPWindows', style: 'max-width:180px', id: 'apps-vm-name' }),
+    h('button', { class: 'btn', id: 'apps-detect-btn' }, 'Detect installed apps'),
+    h('button', { class: 'btn', onclick: () => renderCatalogSyncPrompt(container, true) }, 'Re-sync catalog')
+  ]);
+  container.appendChild(toolbar);
+
+  const detectedNote = h('div', { class: 'sub' }, '');
+  container.appendChild(detectedNote);
+
+  const grid = h('div', { class: 'app-grid' });
+  container.appendChild(grid);
+
+  let detected = new Set();
+
+  function draw(filterText) {
+    grid.innerHTML = '';
+    const f = (filterText || '').trim().toLowerCase();
+    const visible = catalog.filter((a) => !f || a.fullName.toLowerCase().includes(f));
+    for (const app of visible) {
+      grid.appendChild(appTile(app, enabledSlugs, detected));
+    }
+    if (!visible.length) grid.appendChild(h('div', { class: 'sub' }, 'No apps match.'));
+  }
+
+  toolbar.querySelector('.app-search').addEventListener('input', (e) => draw(e.target.value));
+
+  toolbar.querySelector('#apps-detect-btn').addEventListener('click', async () => {
+    const vmName = toolbar.querySelector('#apps-vm-name').value.trim();
+    detectedNote.textContent = 'Scanning installed programs via QEMU Guest Agent...';
+    try {
+      const installedPrograms = await window.api.apps.scan(vmName);
+      const matches = await window.api.apps.detectMatches(catalog, installedPrograms);
+      detected = new Set(matches);
+      detectedNote.textContent = `Detected ${detected.size} catalog apps installed in "${vmName}" (green dot). Checking a box is still up to you.`;
+      draw(toolbar.querySelector('.app-search').value);
+    } catch (e) {
+      detectedNote.textContent = 'Detection failed: ' + e.message + ' (VM not running / guest agent not ready?)';
+    }
+  });
+
+  draw('');
+}
+
+function appTile(app, enabledSlugs, detected) {
+  const enabled = enabledSlugs.has(app.slug);
+  const icon = app.iconPath
+    ? h('img', { class: 'app-icon', src: 'file://' + app.iconPath, alt: '' })
+    : h('div', { class: 'app-icon fallback' }, app.fullName.slice(0, 2).toUpperCase());
+
+  const checkbox = h('input', { type: 'checkbox', class: 'app-check' });
+  checkbox.checked = enabled;
+
+  const tile = h('div', { class: 'app-tile' + (enabled ? ' enabled' : '') }, [
+    detected.has(app.slug) ? h('div', { class: 'app-detected', title: 'Detected as installed in Windows' }) : null,
+    checkbox,
+    icon,
+    h('div', { class: 'app-name' }, app.fullName)
+  ]);
+
+  const toggle = async () => {
+    const next = !checkbox.checked;
+    checkbox.checked = next;
+    tile.classList.toggle('enabled', next);
+    checkbox.disabled = true;
+    const res = next ? await window.api.apps.enable(app) : await window.api.apps.disable(app.slug);
+    checkbox.disabled = false;
+    if (!res.ok) {
+      checkbox.checked = !next;
+      tile.classList.toggle('enabled', !next);
+      toast(`Could not ${next ? 'enable' : 'disable'} ${app.fullName}: ${res.error}`, true);
+    } else {
+      next ? enabledSlugs.add(app.slug) : enabledSlugs.delete(app.slug);
+    }
+  };
+
+  // Single path for both "click the tile" and "click the checkbox": suppress
+  // the checkbox's own native toggle and drive checked/enabled state (plus
+  // the enable/disable IPC call) entirely through toggle() above.
+  checkbox.addEventListener('click', (e) => e.preventDefault());
+  tile.addEventListener('click', toggle);
+
+  return tile;
 }
 
 /* ------------------------------ DOCTOR ------------------------------ */

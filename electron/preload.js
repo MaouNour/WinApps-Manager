@@ -38,6 +38,18 @@ contextBridge.exposeInMainWorld('api', {
     check: () => ipcRenderer.invoke('winapps:check')
   },
   apps: {
-    scan: (vmName) => ipcRenderer.invoke('apps:scan', vmName)
+    scan: (vmName) => ipcRenderer.invoke('apps:scan', vmName),
+    catalogIsCached: () => ipcRenderer.invoke('apps:catalog:isCached'),
+    catalogGet: () => ipcRenderer.invoke('apps:catalog:get'),
+    catalogSync: (force) => ipcRenderer.invoke('apps:catalog:sync', force),
+    onCatalogSyncProgress: (cb) => {
+      const listener = (_e, line) => cb(line);
+      ipcRenderer.on('apps:catalog:sync:progress', listener);
+      return () => ipcRenderer.removeListener('apps:catalog:sync:progress', listener);
+    },
+    listEnabled: (catalog) => ipcRenderer.invoke('apps:enabled:list', catalog),
+    enable: (app) => ipcRenderer.invoke('apps:enable', app),
+    disable: (slug) => ipcRenderer.invoke('apps:disable', slug),
+    detectMatches: (catalog, installedPrograms) => ipcRenderer.invoke('apps:detectMatches', catalog, installedPrograms)
   }
 });
