@@ -32,15 +32,54 @@ async function listGpus() {
   const gpus = [];
   for (const line of stdout.split('\n')) {
     if (!line.trim()) continue;
-    // Machine-readable format, e.g.:
-    // 0000:01:00.0 "VGA compatible controller [0300]" "NVIDIA Corporation [10de]" "GA104 [2504]" -ra1 "Vendor [1234]" "Device [5678]"
-    const m = line.match(/^(\S+)\s+"([^"[]+)\s*\[([0-9a-f]{4})\]"\s+"([^"[]+)\s*\[([0-9a-f]{4})\]"\s+"([^"[]+)\s*\[([0-9a-f]{4})\]"/i);
-    if (!m) continue;
-    const [, address, , classCode, vendorName, vendorId, deviceName, deviceId] = m;
-    if (!classCode.startsWith(VGA_CLASS_PREFIX) && !classCode.startsWith(GPU_3D_CLASS_PREFIX)) continue;
-    gpus.push(describeDevice(address, { vendorName: vendorName.trim(), vendorId, deviceName: deviceName.trim(), deviceId }));
+    const parsed = parseLspciMachineLine(line);
+    if (!parsed) continue;
+    if (!parsed.classCode.startsWith(VGA_CLASS_PREFIX) && !parsed.classCode.startsWith(GPU_3D_CLASS_PREFIX)) continue;
+    gpus.push(describeDevice(parsed.address, parsed));
   }
   return gpus;
+}
+
+/**
+ * Parses one `lspci -Dnnmm` line. Each of the quoted fields (class, vendor,
+ * device, and optionally subsystem vendor/device) is "<free-text name>
+ * [xxxx]" - but the free-text name can itself contain bracketed text, e.g.
+ * Intel iGPUs commonly report as
+ * "CoffeeLake-S GT2 [UHD Graphics 630] [3e92]" or
+ * "AlderLake-P GT2 [Iris Xe Graphics] [46a6]" - a marketing name in
+ * brackets, THEN the real numeric ID in brackets at the very end. A regex
+ * that disallows any '[' before the id (an earlier version of this
+ * function did) silently fails to match those - which is exactly why
+ * "No VGA/3D-controller PCI devices detected" showed up on real hardware
+ * with a perfectly normal Intel iGPU. Splitting into quoted fields first,
+ * then anchoring the id match at the *end* of each field, handles nested
+ * brackets correctly regardless of how many appear in the name.
+ */
+function parseLspciMachineLine(line) {
+  const m = line.match(/^(\S+)\s+(.*)$/);
+  if (!m) return null;
+  const address = m[1];
+  const fields = [...m[2].matchAll(/"([^"]*)"/g)].map((f) => f[1]);
+  if (fields.length < 3) return null;
+  const classInfo = splitTrailingId(fields[0]);
+  const vendorInfo = splitTrailingId(fields[1]);
+  const deviceInfo = splitTrailingId(fields[2]);
+  if (!classInfo || !vendorInfo || !deviceInfo) return null;
+  return {
+    address,
+    classCode: classInfo.id,
+    vendorName: vendorInfo.name,
+    vendorId: vendorInfo.id,
+    deviceName: deviceInfo.name,
+    deviceId: deviceInfo.id
+  };
+}
+
+/** "Some Name [with] [nested] brackets [abcd]" -> { name: "Some Name [with] [nested] brackets", id: "abcd" } */
+function splitTrailingId(field) {
+  const m = field.match(/^(.*)\s\[([0-9a-fA-F]{4})\]$/);
+  if (!m) return null;
+  return { name: m[1].trim(), id: m[2].toLowerCase() };
 }
 
 function describeDevice(address, base) {
