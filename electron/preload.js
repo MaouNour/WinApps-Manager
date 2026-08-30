@@ -3,7 +3,8 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
   host: {
-    check: () => ipcRenderer.invoke('host:check')
+    check: () => ipcRenderer.invoke('host:check'),
+    stats: () => ipcRenderer.invoke('host:stats')
   },
   dialogs: {
     pickIso: (opts) => ipcRenderer.invoke('dialog:pickIso', opts)
@@ -54,9 +55,6 @@ contextBridge.exposeInMainWorld('api', {
     status: (name) => ipcRenderer.invoke('guest:status', name),
     toggle: (name, feature, enabled) => ipcRenderer.invoke('guest:toggle', name, feature, enabled),
     applyRecommended: (name) => ipcRenderer.invoke('guest:applyRecommended', name)
-  },
-  host: {
-    stats: () => ipcRenderer.invoke('host:stats')
   },
   winappsApps: {
     runDetection: (scope) => ipcRenderer.invoke('winappsApps:runDetection', scope),

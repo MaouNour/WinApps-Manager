@@ -17,6 +17,14 @@ const guestControl = require('../backend/guestControl');
 const winappsApps = require('../backend/winappsApps');
 const hostStats = require('../backend/hostStats');
 
+// Without a real GPU driver behind the display (common when the host is
+// itself virtualized, or on some Wayland/Xorg + software-rendering setups),
+// Chromium's GPU process repeatedly retries vsync ("GetVSyncParametersIfAvailable()
+// failed") instead of falling back cleanly - burning CPU and dragging the
+// compositor (gnome-shell/Xwayland) along with it. Disabling GPU acceleration
+// drops the separate GPU process entirely and avoids that retry loop.
+app.disableHardwareAcceleration();
+
 let mainWindow;
 
 // Without this, launching `npm start` a second time (e.g. once left running
