@@ -11,14 +11,39 @@ const pages = {
   doctor: renderDoctor
 };
 
+/* ---------------------- TAB CACHING ----------------------
+ * Each page gets its own container that is created and rendered exactly
+ * once, then just shown/hidden on nav clicks - so switching tabs is
+ * instant instead of re-fetching everything every time. Pages that show
+ * live data (Dashboard) keep themselves fresh via a background poller
+ * that runs regardless of which tab is visible; the others get a manual
+ * "Refresh" affordance instead of re-querying on every visit.
+ * ---------------------------------------------------------- */
+const pageContainers = {};
+const pageReady = {};
+
 navBtns.forEach((btn) => {
   btn.addEventListener('click', () => go(btn.dataset.page));
 });
 
 function go(pageId) {
   navBtns.forEach((b) => b.classList.toggle('active', b.dataset.page === pageId));
-  content.innerHTML = '';
-  pages[pageId]();
+  Object.entries(pageContainers).forEach(([id, el]) => {
+    el.style.display = id === pageId ? '' : 'none';
+  });
+  if (!pageContainers[pageId]) {
+    const el = h('div');
+    content.appendChild(el);
+    pageContainers[pageId] = el;
+  }
+  if (!pageReady[pageId]) {
+    pageReady[pageId] = true;
+    pages[pageId](pageContainers[pageId]);
+  } else if (pageId === 'dashboard') {
+    // Data may have changed in the background while this tab was hidden -
+    // repaint instantly from cache (no network round-trip on the switch itself).
+    paintDashboard();
+  }
 }
 
 function toast(message, isError = false) {
@@ -44,46 +69,119 @@ function h(tag, attrs = {}, children = []) {
   return el;
 }
 
-/* ---------------------------- DASHBOARD ---------------------------- */
-
-async function renderDashboard() {
-  const page = h('div', { class: 'page' }, [
-    h('h1', {}, 'Dashboard'),
-    h('div', { class: 'sub' }, 'Your WinApps virtual machines and quick actions.'),
-    h('div', { id: 'vm-list-card', class: 'card' }, [h('h2', {}, 'Virtual Machines'), h('div', { class: 'sub' }, 'Loading...')])
-  ]);
-  content.appendChild(page);
-  await refreshVmList();
+function fmtPct(p) {
+  return p == null ? '—' : `${p}%`;
 }
 
-async function refreshVmList() {
-  const card = document.getElementById('vm-list-card');
-  if (!card) return;
-  let vms = [];
+/* ------------------------- HOST STATS BAR -------------------------
+ * Always visible in the sidebar, on every tab, refreshed independently
+ * of whatever page is currently open.
+ * -------------------------------------------------------------- */
+function meterClass(pct) {
+  return pct != null && pct >= 85 ? 'meter-fill hot' : 'meter-fill';
+}
+
+async function pollHostStats() {
   try {
-    vms = await window.api.vm.list();
-  } catch (e) {
-    card.innerHTML = '';
-    card.appendChild(h('h2', {}, 'Virtual Machines'));
-    card.appendChild(h('div', { class: 'sub' }, 'Could not list VMs: ' + e.message));
-    return;
+    const s = await window.api.host.stats();
+    const cpuBar = document.getElementById('hs-cpu-bar');
+    const cpuVal = document.getElementById('hs-cpu-val');
+    if (cpuBar) {
+      cpuBar.style.width = (s.cpuPercent ?? 0) + '%';
+      cpuBar.className = meterClass(s.cpuPercent);
+      cpuVal.textContent = fmtPct(s.cpuPercent);
+    }
+    const ramBar = document.getElementById('hs-ram-bar');
+    const ramVal = document.getElementById('hs-ram-val');
+    if (ramBar && s.memory) {
+      ramBar.style.width = (s.memory.percent ?? 0) + '%';
+      ramBar.className = meterClass(s.memory.percent);
+      ramVal.textContent = fmtPct(s.memory.percent);
+    }
+    const gpuBar = document.getElementById('hs-gpu-bar');
+    const gpuVal = document.getElementById('hs-gpu-val');
+    if (gpuBar) {
+      if (s.gpu) {
+        gpuBar.style.width = (s.gpu.percent ?? 0) + '%';
+        gpuBar.className = meterClass(s.gpu.percent);
+        gpuVal.textContent = fmtPct(s.gpu.percent);
+      } else {
+        gpuBar.style.width = '0%';
+        gpuVal.textContent = 'n/a';
+      }
+    }
+  } catch (_) {
+    // Host stats are a nice-to-have - never surface a toast for this.
   }
+}
+setInterval(pollHostStats, 2000);
+pollHostStats();
+
+/* ---------------------------- DASHBOARD ---------------------------- */
+
+// In-memory cache so re-opening a VM's details, or switching back to this
+// tab, is instant - populated by the background poller and by the details
+// panel's own refresh, never wiped out on tab switches.
+const dash = {
+  vms: null,
+  netStatus: {}, // networkName -> bool (disconnected)
+  passwordless: null,
+  details: {}, // vmName -> { stats, config, guestStatus, statsAt, guestAt }
+  expanded: new Set(),
+  statsTimers: {} // vmName -> interval id, while its panel is expanded
+};
+
+async function pollDashboard() {
+  try {
+    const vms = await window.api.vm.list();
+    const netDisconnected = await window.api.net.status('default').catch(() => false);
+    dash.vms = vms;
+    dash.netStatus['default'] = netDisconnected;
+  } catch (e) {
+    dash.vms = dash.vms || [];
+    dash.vmListError = e.message;
+  }
+  paintDashboard();
+}
+setInterval(pollDashboard, 4000);
+
+function renderDashboard(root) {
+  root.appendChild(
+    h('div', { class: 'page' }, [
+      h('h1', {}, 'Dashboard'),
+      h('div', { class: 'sub' }, 'Your WinApps virtual machines and quick actions. Updates automatically in the background.'),
+      h('div', { id: 'vm-list-card', class: 'card' }, [h('h2', {}, 'Virtual Machines'), h('div', { class: 'sub' }, 'Loading...')])
+    ])
+  );
+  pollDashboard();
+}
+
+function paintDashboard() {
+  const card = document.getElementById('vm-list-card');
+  if (!card) return; // dashboard not built yet
   card.innerHTML = '';
   card.appendChild(h('h2', {}, 'Virtual Machines'));
-  if (!vms.length) {
+
+  if (dash.vms == null) {
+    card.appendChild(h('div', { class: 'sub' }, 'Loading...'));
+    return;
+  }
+  if (dash.vmListError && !dash.vms.length) {
+    card.appendChild(h('div', { class: 'sub' }, 'Could not list VMs: ' + dash.vmListError));
+    return;
+  }
+  if (!dash.vms.length) {
     card.appendChild(h('div', { class: 'sub' }, 'No VMs yet. Go to "New VM" to create one.'));
     return;
   }
   const list = h('div', { class: 'vm-list' });
-  for (const vm of vms) {
-    list.appendChild(await vmRow(vm));
-  }
+  for (const vm of dash.vms) list.appendChild(vmRow(vm));
   card.appendChild(list);
 }
 
-async function vmRow(vm) {
+function vmRow(vm) {
   const running = vm.state.includes('running');
-  const netDisconnected = await window.api.net.status('default').catch(() => false);
+  const netDisconnected = !!dash.netStatus['default'];
 
   const row = h('div', { class: 'vm-item' });
   row.appendChild(
@@ -92,7 +190,7 @@ async function vmRow(vm) {
       h('div', { class: 'vm-state' }, [
         h('span', { class: 'badge ' + (running ? 'ok' : '') }, vm.state),
         ' ',
-        h('span', { class: 'badge ' + (netDisconnected ? 'warn' : '') }, netDisconnected ? 'network isolated' : 'network connected')
+        h('span', { class: 'badge ' + (netDisconnected ? 'warn' : 'ok') }, netDisconnected ? 'network isolated' : 'network connected')
       ])
     ])
   );
@@ -105,7 +203,7 @@ async function vmRow(vm) {
         ev.target.disabled = true;
         try {
           await fn();
-          await refreshVmList();
+          await pollDashboard();
         } catch (e) {
           toast(e.message, true);
         } finally {
@@ -125,19 +223,38 @@ async function vmRow(vm) {
       netDisconnected ? window.api.net.reconnect('default') : window.api.net.disconnect('default')
     )
   );
-  const detailsBtn = h('button', { class: 'btn small' }, 'Details');
+  const isExpanded = dash.expanded.has(vm.name);
+  const detailsBtn = h('button', { class: 'btn small' }, isExpanded ? 'Hide details' : 'Details');
   actions.appendChild(detailsBtn);
 
   const wrap = h('div', {}, [row]);
-  const detailsArea = h('div', { style: 'display:none; margin-top:8px' });
+  const detailsArea = h('div', { style: 'display:' + (isExpanded ? 'block' : 'none') + '; margin-top:8px' });
   wrap.appendChild(detailsArea);
+
+  if (isExpanded) {
+    detailsArea.appendChild(renderVmDetails(vm));
+    startDetailsAutoRefresh(vm.name);
+  }
+
   detailsBtn.addEventListener('click', async () => {
-    const showing = detailsArea.style.display !== 'none';
-    detailsArea.style.display = showing ? 'none' : 'block';
-    detailsBtn.textContent = showing ? 'Details' : 'Hide details';
-    if (!showing) {
-      detailsArea.innerHTML = 'Loading...';
-      detailsArea.appendChild(await renderVmDetails(vm));
+    const showing = dash.expanded.has(vm.name);
+    if (showing) {
+      dash.expanded.delete(vm.name);
+      stopDetailsAutoRefresh(vm.name);
+      detailsArea.style.display = 'none';
+      detailsArea.innerHTML = '';
+      detailsBtn.textContent = 'Details';
+    } else {
+      dash.expanded.add(vm.name);
+      detailsBtn.textContent = 'Hide details';
+      detailsArea.style.display = 'block';
+      detailsArea.innerHTML = '';
+      detailsArea.appendChild(renderVmDetails(vm));
+      startDetailsAutoRefresh(vm.name);
+      // Kick a fetch right away even if we already had cached data, so the
+      // numbers are fresh the moment you actually look at them.
+      await refreshVmDetailsData(vm.name, { full: true });
+      rerenderVmDetailsIfOpen(vm);
     }
   });
 
@@ -145,86 +262,155 @@ async function vmRow(vm) {
   return wrap;
 }
 
-/* -------------------------- VM DETAILS PANEL -------------------------- */
+function startDetailsAutoRefresh(vmName) {
+  if (dash.statsTimers[vmName]) return;
+  dash.statsTimers[vmName] = setInterval(async () => {
+    await refreshVmDetailsData(vmName, { full: false });
+    const vm = (dash.vms || []).find((v) => v.name === vmName);
+    if (vm) rerenderVmDetailsIfOpen(vm);
+  }, 3000);
+}
 
-async function renderVmDetails(vm) {
+function stopDetailsAutoRefresh(vmName) {
+  if (dash.statsTimers[vmName]) {
+    clearInterval(dash.statsTimers[vmName]);
+    delete dash.statsTimers[vmName];
+  }
+}
+
+// Re-paints just the expanded details block for one VM in place, without
+// touching the rest of the dashboard (avoids losing focus/scroll position).
+function rerenderVmDetailsIfOpen(vm) {
+  if (!dash.expanded.has(vm.name)) return;
+  const rows = [...document.querySelectorAll('.vm-item')];
+  const rowEl = rows.find((r) => r.querySelector('.vm-name')?.textContent === vm.name);
+  if (!rowEl) return;
+  const detailsArea = rowEl.parentElement.querySelector('div[style*="display"]');
+  if (!detailsArea) return;
+  detailsArea.innerHTML = '';
+  detailsArea.appendChild(renderVmDetails(vm));
+}
+
+/** Fetches fresh stats/config (always) and, if `full`, also guest status. Fills the cache. */
+async function refreshVmDetailsData(vmName, { full }) {
+  if (!dash.details[vmName]) dash.details[vmName] = {};
+  const entry = dash.details[vmName];
+  try {
+    const [stats, config] = await Promise.all([
+      window.api.vmExtra.stats(vmName),
+      window.api.vmExtra.config(vmName)
+    ]);
+    entry.stats = stats;
+    entry.config = config;
+    entry.statsAt = Date.now();
+  } catch (e) {
+    entry.statsError = e.message;
+  }
+  if (full) {
+    try {
+      entry.guestStatus = await window.api.guest.status(vmName);
+      entry.guestError = null;
+    } catch (e) {
+      entry.guestError = e.message;
+    }
+    entry.guestAt = Date.now();
+  }
+}
+
+/* -------------------------- VM DETAILS PANEL --------------------------
+ * Renders synchronously from whatever is already in `dash.details` (which
+ * may be nothing the very first time a VM is expanded, in which case it
+ * shows a loading placeholder that refreshVmDetailsData() fills in a
+ * moment later via rerenderVmDetailsIfOpen()).
+ * ---------------------------------------------------------------- */
+
+function renderVmDetails(vm) {
   const panel = h('div', { class: 'card', style: 'background:var(--panel-2)' });
+  const entry = dash.details[vm.name] || {};
 
-  // --- Live stats ---
+  // --- Live stats (CPU / RAM / disk / network - always kept fresh while open) ---
   const statsBox = h('div', { style: 'margin-bottom:16px' });
   statsBox.appendChild(h('h3', {}, 'Live stats'));
-  const statsBody = h('div', { class: 'sub' }, 'Loading...');
-  statsBox.appendChild(statsBody);
-  panel.appendChild(statsBox);
-
-  try {
-    const stats = await window.api.vmExtra.stats(vm.name);
-    statsBody.innerHTML = '';
+  if (entry.stats) {
+    const stats = entry.stats;
     const memUsedMiB = Math.round((stats.memory.usedKiB || 0) / 1024);
     const memTotalMiB = Math.round((stats.memory.availableKiB || 0) / 1024);
-    statsBody.appendChild(h('div', { class: 'row' }, [
-      h('span', { class: 'badge' }, `CPU: ${stats.cpuPercent == null ? '—' : stats.cpuPercent + '%'}`),
+    statsBox.appendChild(h('div', { class: 'row' }, [
+      h('span', { class: 'badge' }, `CPU: ${fmtPct(stats.cpuPercent)}`),
       h('span', { class: 'badge' }, `RAM: ${memUsedMiB || '—'} / ${memTotalMiB || '—'} MiB`),
       stats.disk ? h('span', { class: 'badge' }, `Disk: ${(stats.disk.actualSizeBytes / 1e9).toFixed(1)} / ${(stats.disk.virtualSizeBytes / 1e9).toFixed(1)} GB`) : null,
       stats.network ? h('span', { class: 'badge' }, `Net: ↓${(stats.network.rxBytes / 1e6).toFixed(1)}MB ↑${(stats.network.txBytes / 1e6).toFixed(1)}MB`) : null
     ]));
-  } catch (e) {
-    statsBody.textContent = 'Stats unavailable: ' + e.message;
+  } else if (entry.statsError) {
+    statsBox.appendChild(h('div', { class: 'sub' }, 'Stats unavailable: ' + entry.statsError));
+  } else {
+    statsBox.appendChild(h('div', { class: 'sub' }, 'Loading...'));
   }
+  panel.appendChild(statsBox);
 
-  // --- Resize compute/storage ---
-  const meta = await window.api.vmExtra.meta(vm.name).catch(() => null);
+  // --- Resize compute/storage - values read live from libvirt, not just our own saved metadata ---
+  const cfg = entry.config;
   const resizeBox = h('div', { style: 'margin-bottom:16px' });
   resizeBox.appendChild(h('h3', {}, 'Resources (edit, VM must be shut off)'));
-  const vcpuInput = h('input', { type: 'number', value: (meta && meta.vcpus) || 2, style: 'max-width:100px' });
-  const memInput = h('input', { type: 'number', value: (meta && meta.memoryMiB) || 4096, style: 'max-width:140px' });
-  const diskInput = h('input', { type: 'number', value: (meta && meta.diskSizeGiB) || 64, style: 'max-width:100px' });
-  resizeBox.appendChild(h('div', { class: 'row' }, [
-    h('div', {}, [h('label', {}, 'vCPUs'), vcpuInput]),
-    h('div', {}, [h('label', {}, 'Memory (MiB)'), memInput]),
-    h('div', {}, [h('label', {}, 'Disk (GiB, grow only)'), diskInput]),
-    h('button', {
-      class: 'btn',
-      onclick: async (ev) => {
-        ev.target.disabled = true;
-        try {
-          await window.api.vmExtra.resizeCompute(vm.name, { vcpus: Number(vcpuInput.value), memoryMiB: Number(memInput.value) });
-          if (meta && meta.diskPath && Number(diskInput.value) > (meta.diskSizeGiB || 0)) {
-            await window.api.vmExtra.growDisk(vm.name, meta.diskPath, Number(diskInput.value));
+  if (cfg) {
+    resizeBox.appendChild(h('div', { class: 'sub' }, `Currently: ${cfg.vcpus || '—'} vCPUs, ${cfg.memoryMiB || '—'} MiB RAM, ${cfg.diskSizeGiB ?? '—'} GB disk (${cfg.diskAllocatedGiB ?? '—'} GB allocated) - read directly from the running VM's own definition.`));
+    const vcpuInput = h('input', { type: 'number', value: cfg.vcpus || 2, style: 'max-width:100px' });
+    const memInput = h('input', { type: 'number', value: cfg.memoryMiB || 4096, style: 'max-width:140px' });
+    const diskInput = h('input', { type: 'number', value: Math.round(cfg.diskSizeGiB || 64), style: 'max-width:100px' });
+    resizeBox.appendChild(h('div', { class: 'row' }, [
+      h('div', {}, [h('label', {}, 'vCPUs'), vcpuInput]),
+      h('div', {}, [h('label', {}, 'Memory (MiB)'), memInput]),
+      h('div', {}, [h('label', {}, 'Disk (GiB, grow only)'), diskInput]),
+      h('button', {
+        class: 'btn',
+        onclick: async (ev) => {
+          ev.target.disabled = true;
+          try {
+            await window.api.vmExtra.resizeCompute(vm.name, { vcpus: Number(vcpuInput.value), memoryMiB: Number(memInput.value) });
+            if (cfg.diskPath && Number(diskInput.value) > (cfg.diskSizeGiB || 0)) {
+              await window.api.vmExtra.growDisk(vm.name, cfg.diskPath, Number(diskInput.value));
+            }
+            toast('Resources updated. Start the VM to apply.');
+            await refreshVmDetailsData(vm.name, { full: false });
+            rerenderVmDetailsIfOpen(vm);
+          } catch (e) {
+            toast(e.message, true);
+          } finally {
+            ev.target.disabled = false;
           }
-          toast('Resources updated. Start the VM to apply.');
-        } catch (e) {
-          toast(e.message, true);
-        } finally {
-          ev.target.disabled = false;
         }
-      }
-    }, 'Apply')
-  ]));
-  resizeBox.appendChild(h('div', { class: 'sub' }, 'Growing the disk only extends the virtual file - use Disk Management inside Windows afterwards to extend the NTFS volume onto the new space.'));
+      }, 'Apply')
+    ]));
+    resizeBox.appendChild(h('div', { class: 'sub' }, 'Growing the disk only extends the virtual file - use Disk Management inside Windows afterwards to extend the NTFS volume onto the new space.'));
+  } else {
+    resizeBox.appendChild(h('div', { class: 'sub' }, entry.statsError ? 'Could not read live configuration.' : 'Loading...'));
+  }
   panel.appendChild(resizeBox);
 
-  // --- Live Defender/Update/Firewall/bloat toggles ---
+  // --- Live Defender/Update/Firewall/Performance/bloat toggles ---
   const guestBox = h('div', {});
-  guestBox.appendChild(h('h3', {}, 'Windows Defender / Update / Firewall / background services'));
-  const guestBody = h('div', { class: 'check-list' }, [h('div', { class: 'sub' }, 'Requires the VM to be running with the guest agent responding. Loading current state...')]);
-  guestBox.appendChild(guestBody);
+  guestBox.appendChild(h('h3', {}, 'Windows management'));
   panel.appendChild(guestBox);
 
   const FEATURES = [
-    ['defender', 'Windows Defender', 'defenderDisabled'],
+    ['defender', 'Windows Defender (incl. real-time protection)', 'defenderDisabled'],
     ['updates', 'Windows Update', 'updatesDisabled'],
     ['firewall', 'Windows Firewall', 'firewallDisabled'],
+    ['performance', 'Optimize for performance (visual effects, power plan, hibernation)', 'performanceDisabled'],
     ['bloat', 'Background bloat services/tasks', 'bloatDisabled']
   ];
 
-  try {
-    const status = await window.api.guest.status(vm.name);
-    guestBody.innerHTML = '';
+  if (entry.guestStatus) {
+    const status = entry.guestStatus;
+    if (status.defenderTamperProtected) {
+      guestBox.appendChild(h('div', { class: 'sub', style: 'color:var(--warn); margin-bottom:8px' },
+        'Defender Tamper Protection is ON in this VM - Microsoft blocks scripted changes to Defender while it\u2019s on. Turn it off by hand first: Windows Security \u2192 Virus & threat protection \u2192 Manage settings \u2192 Tamper Protection.'));
+    }
+    const list = h('div', { class: 'check-list' });
     for (const [feature, label, statusKey] of FEATURES) {
       const disabled = !!status[statusKey];
       const item = h('div', { class: 'check-item' }, [
-        h('div', { class: 'label' }, label),
+        h('div', {}, [h('div', { class: 'label' }, label)]),
         h('div', { class: 'row' }, [
           h('span', { class: 'badge ' + (disabled ? 'warn' : 'ok') }, disabled ? 'disabled' : 'enabled'),
           h('button', {
@@ -234,7 +420,8 @@ async function renderVmDetails(vm) {
               try {
                 await window.api.guest.toggle(vm.name, feature, disabled /* enable if currently disabled */);
                 toast(`${label} ${disabled ? 'enabled' : 'disabled'}.`);
-                detailsAreaRefresh(vm);
+                await refreshVmDetailsData(vm.name, { full: true });
+                rerenderVmDetailsIfOpen(vm);
               } catch (e) {
                 toast(e.message, true);
               } finally {
@@ -244,25 +431,40 @@ async function renderVmDetails(vm) {
           }, disabled ? 'Enable' : 'Disable')
         ])
       ]);
-      guestBody.appendChild(item);
+      list.appendChild(item);
     }
-  } catch (e) {
-    guestBody.innerHTML = '';
-    guestBody.appendChild(h('div', { class: 'sub' }, 'Could not read guest status: ' + e.message));
+    guestBox.appendChild(list);
+
+    guestBox.appendChild(h('button', {
+      class: 'btn primary',
+      style: 'margin-top:10px',
+      onclick: async (ev) => {
+        ev.target.disabled = true;
+        try {
+          await window.api.guest.applyRecommended(vm.name);
+          toast('Applied recommended WinApps settings (Defender, Updates, background bloat, performance mode disabled).');
+          await refreshVmDetailsData(vm.name, { full: true });
+          rerenderVmDetailsIfOpen(vm);
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          ev.target.disabled = false;
+        }
+      }
+    }, 'Apply recommended WinApps optimizations'));
+    guestBox.appendChild(h('div', { class: 'sub' }, 'Firewall is left as-is by the recommended preset; toggle it separately above if you want it off too.'));
+  } else if (entry.guestError) {
+    guestBox.appendChild(h('div', { class: 'sub' }, 'Could not read guest status (VM must be running with the guest agent up): ' + entry.guestError));
+  } else {
+    guestBox.appendChild(h('div', { class: 'sub' }, 'Loading...'));
   }
 
   return panel;
 }
 
-function detailsAreaRefresh(vm) {
-  // Cheap approach: just re-render the whole dashboard list so every panel
-  // (including this one, if still expanded) reflects fresh state.
-  refreshVmList();
-}
-
 /* ------------------------------ WIZARD ------------------------------ */
 
-function renderWizard() {
+function renderWizard(root) {
   const state = {
     name: 'RDPWindows',
     memoryMiB: 4096,
@@ -280,7 +482,8 @@ function renderWizard() {
     enableDefenderDisable: false,
     enableUpdatesDisable: false,
     enableFirewallDisable: false,
-    enableBloatDisable: false
+    enableBloatDisable: false,
+    enablePerformanceMode: false
   };
 
   const page = h('div', { class: 'page' }, [
@@ -305,7 +508,7 @@ function renderWizard() {
       ]),
       checkbox('Enable VirtIO memory ballooning (recommended)', state, 'memballoon'),
       checkbox('Start VM automatically on host boot', state, 'startOnBoot'),
-      h('div', { class: 'sub' }, 'All of these (RAM, vCPUs, disk size) stay editable later from the Dashboard once the VM exists.')
+      h('div', { class: 'sub' }, 'All of these (RAM, vCPUs, disk size) stay editable later from the Dashboard once the VM exists - and the Dashboard always reads the real, current values back from libvirt itself.')
     ]),
     h('div', { class: 'card' }, [
       h('h2', {}, 'Windows account (becomes RDP_USER / RDP_PASS)'),
@@ -316,12 +519,13 @@ function renderWizard() {
       ])
     ]),
     h('div', { class: 'card' }, [
-      h('h2', {}, 'Optional hardening (applied silently on first boot)'),
-      checkbox('Disable Windows Defender', state, 'enableDefenderDisable'),
+      h('h2', {}, 'Optional hardening & performance (applied silently on first boot)'),
+      checkbox('Disable Windows Defender (incl. real-time protection)', state, 'enableDefenderDisable'),
       checkbox('Disable Windows Update', state, 'enableUpdatesDisable'),
       checkbox('Disable Windows Firewall', state, 'enableFirewallDisable'),
-      checkbox('Trim background bloat services/tasks (also tunes power plan for a headless VM)', state, 'enableBloatDisable'),
-      h('div', { class: 'sub' }, 'All four stay toggleable live later too, from the Dashboard - this just sets the starting state.')
+      checkbox('Trim background bloat services/tasks', state, 'enableBloatDisable'),
+      checkbox('Optimize for performance (visual effects, power plan, hibernation, background apps)', state, 'enablePerformanceMode'),
+      h('div', { class: 'sub' }, 'All five stay toggleable live later too, from the Dashboard - this just sets the starting state. Note: if Defender Tamper Protection ends up on inside Windows, it has to be switched off by hand before Defender can be scripted off.')
     ]),
     h('div', { class: 'card', id: 'wizard-progress-card' }, [
       h('h2', {}, 'Create'),
@@ -334,7 +538,7 @@ function renderWizard() {
       }, 'Create VM')
     ])
   ]);
-  content.appendChild(page);
+  root.appendChild(page);
 }
 
 function renderMediaCard(state) {
@@ -451,17 +655,27 @@ async function startCreate(state) {
     VM_NAME: state.name,
     WAFLAVOR: 'libvirt'
   });
+  await pollDashboard();
   go('dashboard');
 }
 
 /* ------------------------------ CONFIG ------------------------------ */
 
-async function renderConfig() {
-  const { values, comments } = await window.api.config.get();
+async function renderConfig(root) {
   const page = h('div', { class: 'page' }, [
     h('h1', {}, 'winapps.conf'),
     h('div', { class: 'sub' }, '~/.config/winapps/winapps.conf - every field below maps 1:1 to a key in that file. Saving only rewrites the values you changed; all comments and layout stay intact.')
   ]);
+  const formHolder = h('div');
+  page.appendChild(formHolder);
+  root.appendChild(page);
+  await paintConfigForm(formHolder);
+}
+
+async function paintConfigForm(formHolder) {
+  formHolder.innerHTML = 'Loading...';
+  const { values, comments } = await window.api.config.get();
+  formHolder.innerHTML = '';
   const form = h('div', { class: 'card' });
   const fieldsState = { ...values };
 
@@ -491,30 +705,30 @@ async function renderConfig() {
     form.appendChild(box);
   }
 
-  form.appendChild(
-    h('button', {
-      class: 'btn primary',
-      onclick: async (ev) => {
-        ev.target.disabled = true;
-        try {
-          await window.api.config.set(fieldsState);
-          toast('winapps.conf saved.');
-        } catch (e) {
-          toast(e.message, true);
-        } finally {
-          ev.target.disabled = false;
-        }
+  const btnRow = h('div', { class: 'row' });
+  btnRow.appendChild(h('button', {
+    class: 'btn primary',
+    onclick: async (ev) => {
+      ev.target.disabled = true;
+      try {
+        await window.api.config.set(fieldsState);
+        toast('winapps.conf saved.');
+      } catch (e) {
+        toast(e.message, true);
+      } finally {
+        ev.target.disabled = false;
       }
-    }, 'Save changes')
-  );
+    }
+  }, 'Save changes'));
+  btnRow.appendChild(h('button', { class: 'btn small', onclick: () => paintConfigForm(formHolder) }, 'Reload from disk'));
+  form.appendChild(btnRow);
 
-  page.appendChild(form);
-  content.appendChild(page);
+  formHolder.appendChild(form);
 }
 
 /* ------------------------------- APPS ------------------------------- */
 
-async function renderApps() {
+async function renderApps(root) {
   const page = h('div', { class: 'page' }, [
     h('h1', {}, 'Apps'),
     h('div', { class: 'sub' }, "A winboat-style icon grid, backed by WinApps' own detection under the hood (installer.sh --user) - registry scan, matching, icons and MIME types are all WinApps' real, tested logic. Nothing here is reinvented; this screen just gives it a proper UI instead of a terminal dialog.")
@@ -594,7 +808,10 @@ async function renderApps() {
   page.appendChild(manualCard);
 
   const gridCard = h('div', { class: 'card' }, [
-    h('h2', {}, 'Detected apps'),
+    h('div', { class: 'row', style: 'justify-content:space-between; margin-bottom:12px' }, [
+      h('h2', { style: 'margin:0' }, 'Detected apps'),
+      h('button', { class: 'btn small', onclick: () => refreshAppGrid() }, 'Refresh')
+    ]),
     h('div', { id: 'app-grid', class: 'app-grid' }, [h('div', { class: 'sub' }, 'Loading...')])
   ]);
   page.appendChild(gridCard);
@@ -627,7 +844,7 @@ async function renderApps() {
   previewCard.appendChild(results);
   page.appendChild(previewCard);
 
-  content.appendChild(page);
+  root.appendChild(page);
   await refreshAppGrid();
 }
 
@@ -679,19 +896,35 @@ function appTile(app) {
 
 /* ------------------------------ DOCTOR ------------------------------ */
 
-async function renderDoctor() {
+async function renderDoctor(root) {
   const page = h('div', { class: 'page' }, [
     h('h1', {}, 'Setup Check'),
     h('div', { class: 'sub' }, 'Everything docs/libvirt.md lists as a prerequisite, checked automatically.')
   ]);
-  const card = h('div', { class: 'card' }, [h('div', { class: 'sub' }, 'Checking...')]);
-  page.appendChild(card);
-  content.appendChild(page);
+  const hostCard = h('div', { class: 'card' }, [h('div', { class: 'sub' }, 'Checking...')]);
+  page.appendChild(hostCard);
 
+  const netCard = h('div', { class: 'card' }, [
+    h('h2', {}, 'Passwordless network toggle'),
+    h('div', { class: 'sub' }, 'Isolating/reconnecting a VM\u2019s network (the "Disconnect network" button on the Dashboard) runs iptables, which normally needs sudo every time. Enabling this installs a narrowly-scoped sudoers rule - limited to exactly this app\u2019s bundled script, on this VM\u2019s subnet only - so it works instantly with no password prompt from then on. One graphical authorization now, never again after.'),
+    h('div', { id: 'net-passwordless-status', class: 'sub' }, 'Checking...')
+  ]);
+  page.appendChild(netCard);
+
+  root.appendChild(page);
+
+  paintHostChecks(hostCard);
+  paintPasswordlessStatus(netCard);
+}
+
+async function paintHostChecks(hostCard) {
+  hostCard.innerHTML = '';
+  hostCard.appendChild(h('div', { class: 'sub' }, 'Checking...'));
   const { allOk, results } = await window.api.host.check();
-  card.innerHTML = '';
-  card.appendChild(h('div', { class: 'row', style: 'margin-bottom:12px' }, [
-    h('span', { class: 'badge ' + (allOk ? 'ok' : 'bad') }, allOk ? 'All checks passed' : 'Some checks need attention')
+  hostCard.innerHTML = '';
+  hostCard.appendChild(h('div', { class: 'row', style: 'margin-bottom:12px; justify-content:space-between' }, [
+    h('span', { class: 'badge ' + (allOk ? 'ok' : 'bad') }, allOk ? 'All checks passed' : 'Some checks need attention'),
+    h('button', { class: 'btn small', onclick: () => paintHostChecks(hostCard) }, 'Re-check')
   ]));
   const list = h('div', { class: 'check-list' });
   results.forEach((r) => {
@@ -700,7 +933,37 @@ async function renderDoctor() {
       h('span', { class: 'badge ' + (r.ok ? 'ok' : 'bad') }, r.ok ? 'OK' : 'Fix needed')
     ]));
   });
-  card.appendChild(list);
+  hostCard.appendChild(list);
+}
+
+async function paintPasswordlessStatus(netCard) {
+  const statusEl = netCard.querySelector('#net-passwordless-status');
+  statusEl.textContent = 'Checking...';
+  let installed = false;
+  try {
+    installed = await window.api.net.passwordlessStatus('default');
+  } catch (_) { /* treat as not installed */ }
+  statusEl.innerHTML = '';
+  statusEl.appendChild(h('div', { class: 'row' }, [
+    h('span', { class: 'badge ' + (installed ? 'ok' : 'warn') }, installed ? 'Passwordless toggle active' : 'Not set up yet'),
+    !installed
+      ? h('button', {
+          class: 'btn primary small',
+          onclick: async (ev) => {
+            ev.target.disabled = true;
+            try {
+              await window.api.net.installPasswordless('default');
+              toast('Passwordless network toggle enabled.');
+              await paintPasswordlessStatus(netCard);
+            } catch (e) {
+              toast(e.message, true);
+            } finally {
+              ev.target.disabled = false;
+            }
+          }
+        }, 'Enable')
+      : h('button', { class: 'btn small', onclick: () => paintPasswordlessStatus(netCard) }, 'Re-check')
+  ]));
 }
 
 go('dashboard');

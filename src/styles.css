@@ -49,7 +49,16 @@ button { font-family: inherit; }
 .nav-btn:hover { background: var(--panel-2); color: var(--text); }
 .nav-btn.active { background: var(--panel-2); color: var(--text); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); }
 
-.sidebar-footer { margin-top: auto; font-size: 11px; color: var(--muted); padding: 8px; }
+.host-stats { margin-top: auto; padding: 10px 8px 4px; border-top: 1px solid var(--border); }
+.host-stats-title { font-size: 10px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-bottom: 8px; }
+.host-stat-row { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); margin-bottom: 6px; }
+.host-stat-row > span:first-child { width: 26px; flex-shrink: 0; }
+.host-stat-val { width: 54px; flex-shrink: 0; text-align: right; color: var(--text); font-variant-numeric: tabular-nums; }
+.meter { flex: 1; height: 6px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--border); overflow: hidden; }
+.meter-fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); transition: width .4s ease; }
+.meter-fill.hot { background: linear-gradient(90deg, var(--warn), var(--danger)); }
+
+.sidebar-footer { margin-top: 4px; font-size: 11px; color: var(--muted); padding: 8px; }
 
 .content { flex: 1; overflow-y: auto; padding: 28px 36px; }
 .page { max-width: 920px; }

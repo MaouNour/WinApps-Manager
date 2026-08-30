@@ -18,12 +18,32 @@ const VM_IMAGES_DIR = path.join(APP_DATA_DIR, 'images'); // qcow2 disks live her
 const SEED_ISO_DIR = path.join(APP_DATA_DIR, 'seed-isos'); // generated autounattend/oem isos per VM
 const DOWNLOADS_DIR = path.join(APP_DATA_DIR, 'downloads'); // cached VirtIO iso, script bundle
 const VM_META_DIR = path.join(APP_DATA_DIR, 'vms'); // one JSON file per VM this tool created
+const BIN_DIR = path.join(APP_DATA_DIR, 'bin'); // our own scripts get copied here so they have a stable, executable, sudoers-friendly path
 const LOG_FILE = path.join(APP_DATA_DIR, 'manager.log');
 
+// Where the app ships its bundled scripts from (repo root in dev, or
+// process.resourcesPath once packaged - `electron .` runs this unpacked
+// either way, so both resolve to a real file on disk).
+const RESOURCES_DIR = path.join(__dirname, '..', 'resources');
+const BUNDLED_NETWORK_CTL_SCRIPT = path.join(RESOURCES_DIR, 'scripts', 'winapps-ctl.sh');
+// Stable, writable copy the app actually invokes (and the one referenced by
+// the sudoers NOPASSWD rule) - see backend/network.js.
+const NETWORK_CTL_SCRIPT = path.join(BIN_DIR, 'winapps-ctl.sh');
+
 function ensureDirs() {
-  for (const d of [APP_DATA_DIR, VM_IMAGES_DIR, SEED_ISO_DIR, DOWNLOADS_DIR, VM_META_DIR, WINAPPS_CONF_DIR]) {
+  for (const d of [APP_DATA_DIR, VM_IMAGES_DIR, SEED_ISO_DIR, DOWNLOADS_DIR, VM_META_DIR, BIN_DIR, WINAPPS_CONF_DIR]) {
     fs.mkdirSync(d, { recursive: true });
   }
+  // Keep the deployed copy of the control script in sync with the bundled
+  // one (covers first run and app updates alike).
+  try {
+    if (fs.existsSync(BUNDLED_NETWORK_CTL_SCRIPT)) {
+      const bundled = fs.readFileSync(BUNDLED_NETWORK_CTL_SCRIPT, 'utf8');
+      const deployed = fs.existsSync(NETWORK_CTL_SCRIPT) ? fs.readFileSync(NETWORK_CTL_SCRIPT, 'utf8') : null;
+      if (bundled !== deployed) fs.writeFileSync(NETWORK_CTL_SCRIPT, bundled);
+      fs.chmodSync(NETWORK_CTL_SCRIPT, 0o755);
+    }
+  } catch (_) { /* best effort - network.js surfaces a clear error if this never lands */ }
 }
 
 // Known locations for the OVMF (UEFI) firmware across distros. We probe these
@@ -69,6 +89,10 @@ module.exports = {
   SEED_ISO_DIR,
   DOWNLOADS_DIR,
   VM_META_DIR,
+  BIN_DIR,
+  RESOURCES_DIR,
+  BUNDLED_NETWORK_CTL_SCRIPT,
+  NETWORK_CTL_SCRIPT,
   LOG_FILE,
   ensureDirs,
   findOvmf

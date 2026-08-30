@@ -18,6 +18,12 @@
       <button class="nav-btn" data-page="config">winapps.conf</button>
       <button class="nav-btn" data-page="apps">Apps</button>
       <button class="nav-btn" data-page="doctor">Setup Check</button>
+      <div class="host-stats" id="host-stats">
+        <div class="host-stats-title">This machine</div>
+        <div class="host-stat-row"><span>CPU</span><div class="meter"><div id="hs-cpu-bar" class="meter-fill"></div></div><span id="hs-cpu-val" class="host-stat-val">—</span></div>
+        <div class="host-stat-row"><span>RAM</span><div class="meter"><div id="hs-ram-bar" class="meter-fill"></div></div><span id="hs-ram-val" class="host-stat-val">—</span></div>
+        <div class="host-stat-row"><span>GPU</span><div class="meter"><div id="hs-gpu-bar" class="meter-fill"></div></div><span id="hs-gpu-val" class="host-stat-val">—</span></div>
+      </div>
       <div class="sidebar-footer">libvirt backend</div>
     </nav>
     <main class="content" id="content">

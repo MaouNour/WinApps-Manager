@@ -25,7 +25,9 @@ contextBridge.exposeInMainWorld('api', {
   net: {
     status: (net) => ipcRenderer.invoke('net:status', net),
     disconnect: (net) => ipcRenderer.invoke('net:disconnect', net),
-    reconnect: (net) => ipcRenderer.invoke('net:reconnect', net)
+    reconnect: (net) => ipcRenderer.invoke('net:reconnect', net),
+    passwordlessStatus: (net) => ipcRenderer.invoke('net:passwordlessStatus', net),
+    installPasswordless: (net) => ipcRenderer.invoke('net:installPasswordless', net)
   },
   config: {
     get: () => ipcRenderer.invoke('config:get'),
@@ -43,12 +45,17 @@ contextBridge.exposeInMainWorld('api', {
   vmExtra: {
     meta: (name) => ipcRenderer.invoke('vm:meta', name),
     stats: (name) => ipcRenderer.invoke('vm:stats', name),
+    config: (name) => ipcRenderer.invoke('vm:config', name),
     resizeCompute: (name, opts) => ipcRenderer.invoke('vm:resizeCompute', name, opts),
     growDisk: (name, diskPath, newSizeGiB) => ipcRenderer.invoke('vm:growDisk', name, diskPath, newSizeGiB)
   },
   guest: {
     status: (name) => ipcRenderer.invoke('guest:status', name),
-    toggle: (name, feature, enabled) => ipcRenderer.invoke('guest:toggle', name, feature, enabled)
+    toggle: (name, feature, enabled) => ipcRenderer.invoke('guest:toggle', name, feature, enabled),
+    applyRecommended: (name) => ipcRenderer.invoke('guest:applyRecommended', name)
+  },
+  host: {
+    stats: () => ipcRenderer.invoke('host:stats')
   },
   winappsApps: {
     runDetection: (scope) => ipcRenderer.invoke('winappsApps:runDetection', scope),

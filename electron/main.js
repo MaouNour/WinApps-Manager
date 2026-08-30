@@ -15,6 +15,7 @@ const vmStats = require('../backend/vmStats');
 const vmResize = require('../backend/vmResize');
 const guestControl = require('../backend/guestControl');
 const winappsApps = require('../backend/winappsApps');
+const hostStats = require('../backend/hostStats');
 
 let mainWindow;
 
@@ -83,6 +84,8 @@ ipcMain.handle('vm:delete', (_e, name, opts) => vmctl.deleteVm(name, opts));
 ipcMain.handle('net:status', (_e, networkName) => network.isNetworkDisconnected(networkName));
 ipcMain.handle('net:disconnect', (_e, networkName) => network.disconnectNetwork(networkName));
 ipcMain.handle('net:reconnect', (_e, networkName) => network.reconnectNetwork(networkName));
+ipcMain.handle('net:passwordlessStatus', (_e, networkName) => network.isPasswordlessNetworkControlInstalled(networkName));
+ipcMain.handle('net:installPasswordless', (_e, networkName) => network.installPasswordlessNetworkControl(networkName));
 
 // ---------- IPC: winapps.conf editor ----------
 ipcMain.handle('config:get', () => winappsConfig.getConfig());
@@ -107,6 +110,12 @@ ipcMain.handle('vm:meta', (_e, name) => {
 // ---------- IPC: live VM stats (CPU/RAM/disk/network) ----------
 ipcMain.handle('vm:stats', (_e, name) => vmStats.getVmStats(name));
 
+// ---------- IPC: actual live VM configuration straight from libvirt ----------
+ipcMain.handle('vm:config', (_e, name) => vmctl.getVmConfig(name));
+
+// ---------- IPC: host-level CPU/RAM/GPU, for the always-visible perf bar ----------
+ipcMain.handle('host:stats', () => hostStats.getHostStats());
+
 // ---------- IPC: resize compute/storage ----------
 ipcMain.handle('vm:resizeCompute', (_e, name, opts) => vmResize.resizeCompute(name, opts));
 ipcMain.handle('vm:growDisk', (_e, name, diskPath, newSizeGiB) => vmResize.growDisk(name, diskPath, newSizeGiB));
@@ -114,6 +123,7 @@ ipcMain.handle('vm:growDisk', (_e, name, diskPath, newSizeGiB) => vmResize.growD
 // ---------- IPC: live Defender/Updates/Firewall/bloat-services control ----------
 ipcMain.handle('guest:status', (_e, name) => guestControl.getGuestControlStatus(name));
 ipcMain.handle('guest:toggle', (_e, name, feature, enabled) => guestControl.applyToggle(name, feature, enabled));
+ipcMain.handle('guest:applyRecommended', (_e, name) => guestControl.applyRecommended(name));
 
 // ---------- IPC: winboat-style app picker backed by WinApps' own detection ----------
 ipcMain.handle('winappsApps:runDetection', async (event, scope) => {

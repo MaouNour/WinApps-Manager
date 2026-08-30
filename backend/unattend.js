@@ -8,7 +8,8 @@ const {
   psDisableDefender,
   psDisableUpdates,
   psDisableFirewall,
-  psDisableBloat
+  psDisableBloat,
+  psDisablePerformanceMode
 } = require('./guestControl');
 
 const OEM_BASE = 'https://raw.githubusercontent.com/winapps-org/winapps/main/oem/';
@@ -182,12 +183,13 @@ ${driverPaths.join('\n')}
 }
 
 /** bootstrap.cmd: runs once at first logon, off the seed ISO, entirely offline. */
-function buildBootstrapCmd({ enableDefenderDisable, enableUpdatesDisable, enableFirewallDisable, enableBloatDisable }) {
+function buildBootstrapCmd({ enableDefenderDisable, enableUpdatesDisable, enableFirewallDisable, enableBloatDisable, enablePerformanceMode }) {
   const optional = [];
   if (enableDefenderDisable) optional.push('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0disable-defender.ps1"');
   if (enableUpdatesDisable) optional.push('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0disable-updates.ps1"');
   if (enableFirewallDisable) optional.push('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0disable-firewall.ps1"');
   if (enableBloatDisable) optional.push('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0disable-bloat.ps1"');
+  if (enablePerformanceMode) optional.push('powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0optimize-performance.ps1"');
 
   return `@echo off
 setlocal enabledelayedexpansion
@@ -239,6 +241,7 @@ async function buildSeedIso(vmOpts, onLine) {
   fs.writeFileSync(path.join(stage, 'disable-updates.ps1'), psDisableUpdates());
   fs.writeFileSync(path.join(stage, 'disable-firewall.ps1'), psDisableFirewall());
   fs.writeFileSync(path.join(stage, 'disable-bloat.ps1'), psDisableBloat());
+  fs.writeFileSync(path.join(stage, 'optimize-performance.ps1'), psDisablePerformanceMode());
   for (const f of OEM_FILES) {
     fs.copyFileSync(path.join(oemDir, f), path.join(stage, f));
   }

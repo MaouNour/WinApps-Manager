@@ -164,6 +164,85 @@ Unchanged in mechanism (still real `iptables`/`virsh` calls, not
 simulated), but now surfaced with live status badges next to each VM on the
 Dashboard instead of being a fire-and-forget button.
 
+## What's new in this pass (network handling, live caching, performance)
+
+You asked for the network on/off control to be switched to a bundled
+alias-style script, for that toggle (and its status) to work without a
+sudo prompt every time, for VM details to open instantly and reflect the
+VM's *actual* live resources, for Defender/real-time-protection disabling
+to actually stick, for more Windows-management/performance options, for a
+CPU/RAM/GPU readout that's always visible, and for tab-switching in the
+app to stop re-fetching everything from scratch. Here's what changed:
+
+### Bundled control script (`resources/scripts/winapps-ctl.sh`)
+This is your alias script, parameterized (subnet / VM name become
+arguments instead of being hardcoded to `192.168.122.0/24` /
+`RDPWindows`) so one script covers every VM. It's copied to
+`~/.local/share/winapps-manager/bin/winapps-ctl.sh` on every app start
+(`backend/paths.js: ensureDirs`) so it always has a stable, executable
+path regardless of where the app itself is installed - that stable path
+is also what the sudoers rule below trusts. `backend/network.js` now
+shells out to it instead of building `iptables` invocations directly.
+`vm start/stop/restart/kill` also has a case in the script for
+manual/CLI parity, though the app itself keeps talking to `virsh`
+directly for that part (it doesn't need root, unlike the network toggle).
+
+### Network toggle without a sudo prompt every time
+Setup Check now has a "Passwordless network toggle" card. Clicking
+**Enable** does exactly one thing: writes a `NOPASSWD` sudoers rule to
+`/etc/sudoers.d/90-winapps-manager-network`, scoped to precisely three
+commands - `winapps-ctl.sh network status|stop|start <your-subnet>` -
+never a raw `iptables` grant, never a wildcard on the subnet. It's
+validated with `visudo -c` on a temp file before it ever touches
+`/etc/sudoers.d/`, since a malformed sudoers file can lock `sudo` out
+entirely. Installing it needs one graphical authorization (`pkexec`);
+after that, Dashboard's "Disconnect/Reconnect network" and its status
+badge never prompt again. If you skip this step, it still works - it
+just falls back to a one-off graphical prompt per toggle instead.
+
+### VM details: instant, and reading the *real* VM
+- `backend/vmctl.js: getVmConfig()` reads current vCPUs/RAM/disk straight
+  from `virsh dumpxml` + `qemu-img info`, so the Resources panel always
+  shows what the VM actually has - not just what our own metadata file
+  last remembered, which could drift if you resized it another way.
+- The whole frontend now caches: each sidebar tab is built once and
+  shown/hidden afterwards instead of being torn down and re-fetched on
+  every click. The Dashboard also runs a background poll (every 4s)
+  independent of which tab is open, so switching back to it is instant.
+  An expanded VM's "Live stats" (CPU/RAM/disk/net) auto-refresh every 3s
+  while that panel is open, with no need to re-click Details.
+
+### Defender / real-time protection that actually holds
+`psDisableDefender()` now sets both the live `Set-MpPreference` flags
+*and* the equivalent Group Policy registry keys (so it survives
+Defender's periodic policy re-apply), disables real-time, behavior,
+IOAV, script, archive and removable-drive scanning specifically, and
+stops/disables the underlying services. It also checks and reports
+**Tamper Protection** status - if that's on, Microsoft deliberately
+blocks every scripted change to Defender (there's no bypass); the
+Details panel shows a clear note telling you to flip it off by hand
+first, in Windows Security → Virus & threat protection → Manage
+settings.
+
+### More Windows management
+- New **Optimize for performance** toggle
+  (`psDisablePerformanceMode`/`psEnablePerformanceMode` in
+  `backend/guestControl.js`): best-performance visual effects, high
+  performance power plan, hibernation off, Storage Sense off, background
+  apps off. Toggleable live from Details, and offered as a wizard
+  checkbox for first boot too.
+- New **"Apply recommended WinApps optimizations"** button in Details -
+  Defender, Updates, background bloat, and performance mode all disabled
+  in one click (Firewall is deliberately left alone by this preset; it's
+  still a separate toggle if you want it off too).
+
+### Always-visible CPU/RAM/GPU
+The sidebar now has a small live meter bar (`backend/hostStats.js`,
+polled every 2s) for this machine's own CPU%, RAM%, and GPU% (via
+`nvidia-smi` if present, otherwise the DRM `gpu_busy_percent` sysfs file
+for AMD/Intel; shows "n/a" if neither is available) - visible on every
+tab, not just Dashboard.
+
 ## Still not built (being upfront about the remaining gaps)
 
 - **CPU pinning picker UI** - `libvirtXml.js` already accepts
