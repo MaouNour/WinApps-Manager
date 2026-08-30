@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "description": "GUI to create and manage WinApps libvirt Windows VMs.",
   "license": "MIT",
-  "author": "MaouNour",
+  "author": {
+    "name": "MaouNour",
+    "email": "nourg0870@protonmail.com"
+  },
   "main": "electron/main.js",
   "scripts": {
     "start": "electron .",
