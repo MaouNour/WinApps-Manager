@@ -2,6 +2,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('api', {
+  app: {
+    onVisibilityChange: (cb) => {
+      const listener = (_e, visible) => cb(visible);
+      ipcRenderer.on('window:visibility', listener);
+      return () => ipcRenderer.removeListener('window:visibility', listener);
+    }
+  },
   host: {
     check: () => ipcRenderer.invoke('host:check'),
     stats: () => ipcRenderer.invoke('host:stats')

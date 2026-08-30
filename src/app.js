@@ -114,8 +114,7 @@ async function pollHostStats() {
     // Host stats are a nice-to-have - never surface a toast for this.
   }
 }
-setInterval(pollHostStats, 3000);
-pollHostStats();
+let hostStatsTimer = null;
 
 /* ---------------------------- DASHBOARD ---------------------------- */
 
@@ -150,7 +149,59 @@ async function pollDashboard() {
   }
   paintDashboard();
 }
-setInterval(pollDashboard, 5000);
+let dashboardTimer = null;
+
+/**
+ * Single on/off switch for every background poller this app runs: host
+ * stats, the VM list/network poll, and any per-VM details timers left
+ * running for expanded rows. Called on startup, and again whenever the
+ * window's visibility changes (see window.api.app.onVisibilityChange
+ * below) - there's no reason to keep spawning virsh/PowerShell subprocess
+ * calls on a timer while the window is minimized or hidden.
+ */
+function startBackgroundPolling() {
+  if (!hostStatsTimer) {
+    hostStatsTimer = setInterval(pollHostStats, 3000);
+    pollHostStats();
+  }
+  if (!dashboardTimer) {
+    dashboardTimer = setInterval(pollDashboard, 5000);
+    pollDashboard();
+  }
+  // Re-arm details timers for whichever VM rows were left expanded -
+  // stopBackgroundPolling() below clears these, so a resume needs to
+  // restart them explicitly rather than relying on stale interval ids.
+  for (const vmName of dash.expanded) startDetailsAutoRefresh(vmName);
+}
+
+function stopBackgroundPolling() {
+  if (hostStatsTimer) {
+    clearInterval(hostStatsTimer);
+    hostStatsTimer = null;
+  }
+  if (dashboardTimer) {
+    clearInterval(dashboardTimer);
+    dashboardTimer = null;
+  }
+  for (const vmName of Object.keys(dash.statsTimers)) stopDetailsAutoRefresh(vmName);
+}
+
+if (window.api.app && window.api.app.onVisibilityChange) {
+  window.api.app.onVisibilityChange((visible) => {
+    if (visible) startBackgroundPolling();
+    else stopBackgroundPolling();
+  });
+}
+// Page Visibility API as a second, OS/window-manager-independent signal -
+// covers cases (some Linux compositors) where Electron's own minimize/hide
+// events don't fire reliably. Whichever signal says "hidden" wins, since
+// missing a pause is the costly direction to get wrong, not an extra one.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopBackgroundPolling();
+  else startBackgroundPolling();
+});
+
+startBackgroundPolling();
 
 function renderDashboard(root) {
   root.appendChild(

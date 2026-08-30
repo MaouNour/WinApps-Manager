@@ -59,6 +59,21 @@ function createWindow() {
     }
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'src', 'index.html'));
+
+  // The renderer's own background pollers (host stats, dashboard, per-VM
+  // details) are what spawn all the virsh/PowerShell subprocess calls - real
+  // CPU cost, not just a repaint. There's no point paying that while the
+  // window is minimized or otherwise not visible, so tell the renderer
+  // whenever that changes and let it pause/resume itself accordingly.
+  const sendVisibility = (visible) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('window:visibility', visible);
+    }
+  };
+  mainWindow.on('minimize', () => sendVisibility(false));
+  mainWindow.on('restore', () => sendVisibility(true));
+  mainWindow.on('hide', () => sendVisibility(false));
+  mainWindow.on('show', () => sendVisibility(true));
 }
 
 if (gotLock) {
