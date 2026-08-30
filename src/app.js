@@ -124,7 +124,14 @@ pollHostStats();
 // panel's own refresh, never wiped out on tab switches.
 const dash = {
   vms: null,
-  netStatus: {}, // networkName -> bool (disconnected)
+  // networkName -> 'connected' | 'disconnected' | 'unknown'. This poll is
+  // passive/background (see setInterval below) and window.api.net.status
+  // is poll-safe: it only ever runs `sudo -n` and reports 'unknown' if that
+  // fails, it NEVER escalates to a pkexec prompt on its own. Only an
+  // explicit Connect/Disconnect click (or Setup Check -> Enable) is allowed
+  // to trigger an interactive auth dialog - otherwise a 4s poll would pop a
+  // password prompt every 4 seconds forever.
+  netStatus: {},
   passwordless: null,
   details: {}, // vmName -> { stats, config, guestStatus, statsAt, guestAt }
   expanded: new Set(),
@@ -134,9 +141,9 @@ const dash = {
 async function pollDashboard() {
   try {
     const vms = await window.api.vm.list();
-    const netDisconnected = await window.api.net.status('default').catch(() => false);
+    const netState = await window.api.net.status('default').catch(() => 'unknown');
     dash.vms = vms;
-    dash.netStatus['default'] = netDisconnected;
+    dash.netStatus['default'] = netState;
   } catch (e) {
     dash.vms = dash.vms || [];
     dash.vmListError = e.message;
@@ -181,7 +188,9 @@ function paintDashboard() {
 
 function vmRow(vm) {
   const running = vm.state.includes('running');
-  const netDisconnected = !!dash.netStatus['default'];
+  const netState = dash.netStatus['default'] || 'unknown';
+  const netDisconnected = netState === 'disconnected';
+  const netUnknown = netState === 'unknown';
 
   const row = h('div', { class: 'vm-item' });
   row.appendChild(
@@ -190,7 +199,9 @@ function vmRow(vm) {
       h('div', { class: 'vm-state' }, [
         h('span', { class: 'badge ' + (running ? 'ok' : '') }, vm.state),
         ' ',
-        h('span', { class: 'badge ' + (netDisconnected ? 'warn' : 'ok') }, netDisconnected ? 'network isolated' : 'network connected')
+        netUnknown
+          ? h('span', { class: 'badge warn', title: 'Passwordless network toggle isn\u2019t set up - status can\u2019t be checked without a password prompt. See Setup Check.' }, 'network status: set up required')
+          : h('span', { class: 'badge ' + (netDisconnected ? 'warn' : 'ok') }, netDisconnected ? 'network isolated' : 'network connected')
       ])
     ])
   );
@@ -907,6 +918,7 @@ async function renderDoctor(root) {
   const netCard = h('div', { class: 'card' }, [
     h('h2', {}, 'Passwordless network toggle'),
     h('div', { class: 'sub' }, 'Isolating/reconnecting a VM\u2019s network (the "Disconnect network" button on the Dashboard) runs iptables, which normally needs sudo every time. Enabling this installs a narrowly-scoped sudoers rule - limited to exactly this app\u2019s bundled script, on this VM\u2019s subnet only - so it works instantly with no password prompt from then on. One graphical authorization now, never again after.'),
+    h('div', { class: 'sub' }, 'If "Enable" below fails or your window manager doesn\u2019t run a graphical polkit agent (pkexec will fail instantly with "Request dismissed" in that case), run ./install.sh from the project folder instead - it does the same setup through one ordinary terminal sudo prompt.'),
     h('div', { id: 'net-passwordless-status', class: 'sub' }, 'Checking...')
   ]);
   page.appendChild(netCard);

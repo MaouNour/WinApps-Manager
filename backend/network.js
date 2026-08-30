@@ -28,22 +28,39 @@ function netmaskToCidr(mask) {
 }
 
 /**
- * Runs `winapps-ctl.sh network <action> <subnet>` as root.
- * Tries a plain, non-interactive `sudo -n` first (works instantly, no
- * prompt, once installPasswordlessNetworkControl() has been run once).
- * If that's not set up yet, falls back to a one-off graphical `pkexec`
- * prompt so the feature still works out of the box either way.
+ * Non-interactive only - runs `winapps-ctl.sh network <action> <subnet>` via
+ * `sudo -n`. Never prompts, never falls back to pkexec. Rejects immediately
+ * if the NOPASSWD rule isn't installed (or sudo isn't configured that way).
+ *
+ * This is the ONLY thing the background poller is allowed to call. A passive
+ * status poll must never trigger an interactive auth prompt - if it did,
+ * every polling tick (e.g. every 4s) would pop a graphical pkexec dialog,
+ * which is exactly the "prompts every 5 seconds" bug.
  */
-async function runNetScript(action, subnet) {
+async function runNetScriptQuiet(action, subnet) {
+  if (!fs.existsSync(NETWORK_CTL_SCRIPT)) {
+    throw new Error(`Bundled control script missing at ${NETWORK_CTL_SCRIPT} (reinstall/reopen the app to redeploy it).`);
+  }
+  const { stdout } = await run('sudo', ['-n', NETWORK_CTL_SCRIPT, 'network', action, subnet]);
+  return stdout;
+}
+
+/**
+ * Runs `winapps-ctl.sh network <action> <subnet>` as root, for an explicit
+ * user-initiated action (Connect/Disconnect button, or Setup Check). Tries
+ * non-interactive `sudo -n` first (instant, no prompt, once
+ * installPasswordlessNetworkControl() / install.sh has been run once). If
+ * that's not set up yet, falls back to a one-off graphical `pkexec` prompt
+ * so the button still works out of the box - but this path is only ever
+ * reached from a direct user click, never from background polling.
+ */
+async function runNetScriptInteractive(action, subnet) {
   if (!fs.existsSync(NETWORK_CTL_SCRIPT)) {
     throw new Error(`Bundled control script missing at ${NETWORK_CTL_SCRIPT} (reinstall/reopen the app to redeploy it).`);
   }
   try {
-    const { stdout } = await run('sudo', ['-n', NETWORK_CTL_SCRIPT, 'network', action, subnet]);
-    return stdout;
+    return await runNetScriptQuiet(action, subnet);
   } catch (_) {
-    // No NOPASSWD rule yet (or sudo/polkit not configured that way) -
-    // fall back to a one-time graphical prompt so this still works.
     const { stdout } = await run('pkexec', [NETWORK_CTL_SCRIPT, 'network', action, subnet]);
     return stdout;
   }
@@ -52,22 +69,44 @@ async function runNetScript(action, subnet) {
 // Equivalent to: alias stop-win-network="sudo iptables -A FORWARD -s <subnet> -d 0.0.0.0/0 -j DROP"
 async function disconnectNetwork(networkName = 'default') {
   const subnet = await getNetworkCidr(networkName);
-  await runNetScript('stop', subnet);
+  await runNetScriptInteractive('stop', subnet);
   return { subnet };
 }
 
 // Equivalent to: alias connect-win-network="sudo iptables -D FORWARD -s <subnet> -d 0.0.0.0/0 -j DROP"
 async function reconnectNetwork(networkName = 'default') {
   const subnet = await getNetworkCidr(networkName);
-  await runNetScript('start', subnet);
+  await runNetScriptInteractive('start', subnet);
   return { subnet };
 }
 
-/** True if the DROP rule for this network's subnet currently exists. */
+/**
+ * Passive status check for the background poller. Returns 'connected',
+ * 'disconnected', or 'unknown' - NEVER throws, NEVER prompts (no pkexec
+ * fallback). 'unknown' means the passwordless rule isn't installed yet
+ * (or sudo/the script isn't reachable) - the UI should show a "set up
+ * passwordless toggle" hint in that case, not retry with an auth dialog.
+ */
+async function checkNetworkStatus(networkName = 'default') {
+  let subnet;
+  try {
+    subnet = await getNetworkCidr(networkName);
+  } catch (_) {
+    return 'unknown';
+  }
+  try {
+    const out = await runNetScriptQuiet('status', subnet);
+    if (/state=disconnected/.test(out)) return 'disconnected';
+    if (/state=connected/.test(out)) return 'connected';
+    return 'unknown';
+  } catch (_) {
+    return 'unknown';
+  }
+}
+
+/** True if the DROP rule for this network's subnet currently exists. 'unknown' reads as false (connected/unblocked assumed). */
 async function isNetworkDisconnected(networkName = 'default') {
-  const subnet = await getNetworkCidr(networkName);
-  const out = await runNetScript('status', subnet);
-  return /state=disconnected/.test(out);
+  return (await checkNetworkStatus(networkName)) === 'disconnected';
 }
 
 /**
@@ -77,13 +116,7 @@ async function isNetworkDisconnected(networkName = 'default') {
  * prompts - fails immediately if a password would be required).
  */
 async function isPasswordlessNetworkControlInstalled(networkName = 'default') {
-  const subnet = await getNetworkCidr(networkName);
-  try {
-    const { stdout } = await run('sudo', ['-n', NETWORK_CTL_SCRIPT, 'network', 'status', subnet]);
-    return /state=/.test(stdout);
-  } catch (_) {
-    return false;
-  }
+  return (await checkNetworkStatus(networkName)) !== 'unknown';
 }
 
 /**
@@ -125,6 +158,7 @@ module.exports = {
   disconnectNetwork,
   reconnectNetwork,
   isNetworkDisconnected,
+  checkNetworkStatus,
   isPasswordlessNetworkControlInstalled,
   installPasswordlessNetworkControl
 };

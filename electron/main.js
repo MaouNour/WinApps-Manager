@@ -81,7 +81,8 @@ ipcMain.handle('vm:reset', (_e, name) => vmctl.resetVm(name));
 ipcMain.handle('vm:delete', (_e, name, opts) => vmctl.deleteVm(name, opts));
 
 // ---------- IPC: per-VM network toggle ----------
-ipcMain.handle('net:status', (_e, networkName) => network.isNetworkDisconnected(networkName));
+// Passive/poll-safe: never prompts. Returns 'connected' | 'disconnected' | 'unknown'.
+ipcMain.handle('net:status', (_e, networkName) => network.checkNetworkStatus(networkName));
 ipcMain.handle('net:disconnect', (_e, networkName) => network.disconnectNetwork(networkName));
 ipcMain.handle('net:reconnect', (_e, networkName) => network.reconnectNetwork(networkName));
 ipcMain.handle('net:passwordlessStatus', (_e, networkName) => network.isPasswordlessNetworkControlInstalled(networkName));
