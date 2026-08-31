@@ -246,7 +246,17 @@ function psEnableGroup(g) {
  * group is Disabled, EVERY listed appx pattern has 0 packages left, and
  * (for task-only groups) every task's State is Disabled. A group with
  * nothing installed/matched at all is NOT reported as disabled (avoids a
- * false-positive "everything's off" on a group that never had 0 items). */
+ * false-positive "everything's off" on a group that never had 0 items).
+ *
+ * PERFORMANCE: this only ever reads each service's registry Start value
+ * directly (cheap). It does NOT call Get-AppxPackage or Get-ScheduledTask
+ * itself - those are two of the slowest cmdlets in Windows, and calling
+ * either once per pattern/task across every group (30+ calls) is what
+ * caused guest-exec to time out and spike CPU on refresh. Instead this
+ * looks appx/task state up in the two shared caches (`$allAppxNames`,
+ * `$taskStateByPath`) that psStatus() below builds with exactly ONE
+ * Get-AppxPackage call and ONE Get-ScheduledTask call total, no matter how
+ * many groups or patterns reference them. */
 function groupStatusProbePs(g) {
   const lines = [];
   const checks = [];
@@ -256,18 +266,12 @@ function groupStatusProbePs(g) {
     checks.push(`$${g.key}SvcOff`);
   }
   if (g.appx && g.appx.length) {
-    // Get-AppxPackage's -Name takes one wildcard string, not an array, so
-    // each pattern is checked separately and the matches summed - same
-    // per-pattern loop shape as the disable/remove side above.
-    lines.push(`$${g.key}AppxLeft = (@(${appxArr(g.appx)}) | ForEach-Object { Get-AppxPackage -AllUsers $_ -ErrorAction SilentlyContinue } | Measure-Object).Count`);
+    const likeExpr = g.appx.map((a) => `$_ -like '*${a}*'`).join(' -or ');
+    lines.push(`$${g.key}AppxLeft = @($allAppxNames | Where-Object { ${likeExpr} }).Count`);
     checks.push(`($${g.key}AppxLeft -eq 0)`);
   }
   if (g.tasks && g.tasks.length) {
-    lines.push(`$${g.key}TaskStates = @(${taskArr(g.tasks)}) | ForEach-Object {
-  $tp = $_.Substring(0, $_.LastIndexOf('\\') + 1)
-  $tn = $_.Substring($_.LastIndexOf('\\') + 1)
-  (Get-ScheduledTask -TaskPath $tp -TaskName $tn -ErrorAction SilentlyContinue).State
-}`);
+    lines.push(`$${g.key}TaskStates = @(${taskArr(g.tasks)}) | ForEach-Object { $taskStateByPath[$_] }`);
     lines.push(`$${g.key}TasksOff = ($${g.key}TaskStates.Count -gt 0) -and (($${g.key}TaskStates | Where-Object { $_ -ne 'Disabled' }).Count -eq 0)`);
     checks.push(`$${g.key}TasksOff`);
   }
@@ -634,6 +638,15 @@ Write-Output "gamebarspotlight-enabled"`;
 
 // Live status probe used by the Dashboard toggle badges.
 function psStatus() {
+  const needsAppx = GRANULAR_GROUPS.some((g) => g.appx && g.appx.length);
+  const needsTasks = GRANULAR_GROUPS.some((g) => g.tasks && g.tasks.length);
+  // Built ONCE regardless of how many groups/patterns reference them below -
+  // see the perf note on groupStatusProbePs above for why this matters.
+  const sharedCaches = [
+    needsAppx ? `$allAppxNames = (Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue).Name` : null,
+    needsTasks ? `$taskStateByPath = @{}
+foreach ($t in (Get-ScheduledTask -ErrorAction SilentlyContinue)) { $taskStateByPath[$t.TaskPath + $t.TaskName] = $t.State }` : null
+  ].filter(Boolean).join('\n');
   const groupProbes = GRANULAR_GROUPS.map(groupStatusProbePs).join('\n');
   const groupJsonFields = GRANULAR_GROUPS.map((g) => `  ${g.key}Disabled = $${g.key}Disabled`).join('\n');
   return `$ErrorActionPreference = 'SilentlyContinue'
@@ -654,6 +667,7 @@ $shellHw = (Get-Service ShellHWDetection).StartType
 $spooler = (Get-Service Spooler).StartType
 $taskMgrBlocked = Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Taskmgr.exe'
 $gameDvrOff = (Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR' -Name AllowGameDVR -ErrorAction SilentlyContinue).AllowGameDVR
+${sharedCaches}
 ${groupProbes}
 [PSCustomObject]@{
   defenderDisabled = [bool]$defender
