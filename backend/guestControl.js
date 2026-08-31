@@ -636,6 +636,85 @@ Remove-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent' 
 Write-Output "gamebarspotlight-enabled"`;
 }
 
+// Remote-session kiosk lockdown: strips every piece of shell chrome so a
+// full desktop RDP session shows nothing but a black background and
+// whatever app windows are actually open - no taskbar, no tray/notification
+// icons or clock, no desktop icons or right-click menu, no toast/Action
+// Center notifications, no Search box/Task View/Widgets buttons. This is
+// registry/policy-based (works on any Windows 10/11 SKU, not just
+// Enterprise/IoT "Assigned Access" kiosk mode) and does NOT replace
+// explorer.exe as the shell - Explorer keeps running (still needed to host
+// app windows and the RemoteApp session itself), it's just stripped down to
+// showing none of its own UI. Pair this with the Task Manager/Settings
+// block above so there's no way back to a normal desktop from inside the
+// session by hand.
+function psDisableKioskShell() {
+  return `$ErrorActionPreference = 'SilentlyContinue'
+$adv = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced'
+New-Item -Path $adv -Force | Out-Null
+Set-ItemProperty -Path $adv -Name HideIcons -Value 1 -Type DWord
+Set-ItemProperty -Path $adv -Name TaskbarSi -Value 0 -Type DWord
+Set-ItemProperty -Path $adv -Name SearchboxTaskbarMode -Value 0 -Type DWord
+Set-ItemProperty -Path $adv -Name ShowTaskViewButton -Value 0 -Type DWord
+Set-ItemProperty -Path $adv -Name TaskbarDa -Value 0 -Type DWord
+Set-ItemProperty -Path $adv -Name HideSCAHealth -Value 1 -Type DWord
+Set-ItemProperty -Path $adv -Name HideSCANetwork -Value 1 -Type DWord
+Set-ItemProperty -Path $adv -Name HideSCAVolume -Value 1 -Type DWord
+$pol = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer'
+New-Item -Path $pol -Force | Out-Null
+Set-ItemProperty -Path $pol -Name NoDesktop -Value 1 -Type DWord
+Set-ItemProperty -Path $pol -Name NoViewContextMenu -Value 1 -Type DWord
+Set-ItemProperty -Path $pol -Name NoTrayContextMenu -Value 1 -Type DWord
+Set-ItemProperty -Path $pol -Name NoSetTaskbar -Value 1 -Type DWord
+Set-ItemProperty -Path $pol -Name NoTrayItemsDisplay -Value 1 -Type DWord
+# Solid black wallpaper, no slideshow
+Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name Wallpaper -Value '' -Type String
+Set-ItemProperty -Path 'HKCU:\\Control Panel\\Colors' -Name Background -Value '0 0 0' -Type String
+RUNDLL32.EXE user32.dll,UpdatePerUserSystemParameters
+# Auto-hide the taskbar permanently (patches the StuckRects3 autohide bit -
+# there's no plain DWORD for this, it lives inside a binary Settings blob)
+try {
+  $key = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StuckRects3'
+  $bytes = (Get-ItemProperty -Path $key -Name Settings -ErrorAction Stop).Settings
+  $bytes[8] = $bytes[8] -bor 0x01
+  Set-ItemProperty -Path $key -Name Settings -Value $bytes -Type Binary
+} catch {}
+# Kill Action Center + every toast notification, machine-wide
+$pushPol = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications'
+New-Item -Path $pushPol -Force | Out-Null
+Set-ItemProperty -Path $pushPol -Name ToastEnabled -Value 0 -Type DWord
+$acPol = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer'
+New-Item -Path $acPol -Force | Out-Null
+Set-ItemProperty -Path $acPol -Name DisableNotificationCenter -Value 1 -Type DWord
+$toastPol = 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\CurrentVersion\\PushNotifications'
+New-Item -Path $toastPol -Force | Out-Null
+Set-ItemProperty -Path $toastPol -Name NoToastApplicationNotification -Value 1 -Type DWord
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+Write-Output "kioskshell-disabled"`;
+}
+function psEnableKioskShell() {
+  return `$ErrorActionPreference = 'SilentlyContinue'
+$adv = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced'
+Set-ItemProperty -Path $adv -Name HideIcons -Value 0 -Type DWord
+Set-ItemProperty -Path $adv -Name TaskbarSi -Value 1 -Type DWord
+Set-ItemProperty -Path $adv -Name SearchboxTaskbarMode -Value 1 -Type DWord
+Set-ItemProperty -Path $adv -Name ShowTaskViewButton -Value 1 -Type DWord
+Set-ItemProperty -Path $adv -Name TaskbarDa -Value 1 -Type DWord
+Remove-ItemProperty -Path $adv -Name HideSCAHealth,HideSCANetwork,HideSCAVolume
+Remove-Item -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer' -Recurse -Force
+try {
+  $key = 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\StuckRects3'
+  $bytes = (Get-ItemProperty -Path $key -Name Settings -ErrorAction Stop).Settings
+  $bytes[8] = $bytes[8] -band 0xFE
+  Set-ItemProperty -Path $key -Name Settings -Value $bytes -Type Binary
+} catch {}
+Remove-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\PushNotifications' -Name ToastEnabled
+Remove-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer' -Recurse -Force
+Remove-Item -Path 'HKCU:\\Software\\Policies\\Microsoft\\Windows\\CurrentVersion\\PushNotifications' -Recurse -Force
+Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+Write-Output "kioskshell-enabled"`;
+}
+
 // Live status probe used by the Dashboard toggle badges.
 function psStatus() {
   const needsAppx = GRANULAR_GROUPS.some((g) => g.appx && g.appx.length);
@@ -643,7 +722,16 @@ function psStatus() {
   // Built ONCE regardless of how many groups/patterns reference them below -
   // see the perf note on groupStatusProbePs above for why this matters.
   const sharedCaches = [
-    needsAppx ? `$allAppxNames = (Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue).Name` : null,
+    // Excludes NonRemovable packages (Windows' own protected/framework
+    // appx, e.g. several Xbox identity/framework components) - those can
+    // never actually be removed by Remove-AppxPackage no matter how many
+    // times a group's Disable button is clicked, so counting them here
+    // left groups like "Xbox & gaming services" permanently stuck showing
+    // "enabled" even after the disable script ran successfully and shut
+    // off every service it could touch. Excluding them means a group's
+    // Disabled flag reflects what Windows will actually let this VM
+    // remove, not an unreachable 100%.
+    needsAppx ? `$allAppxNames = (Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-Object { -not $_.NonRemovable }).Name` : null,
     needsTasks ? `$taskStateByPath = @{}
 foreach ($t in (Get-ScheduledTask -ErrorAction SilentlyContinue)) { $taskStateByPath[$t.TaskPath + $t.TaskName] = $t.State }` : null
   ].filter(Boolean).join('\n');
@@ -667,6 +755,7 @@ $shellHw = (Get-Service ShellHWDetection).StartType
 $spooler = (Get-Service Spooler).StartType
 $taskMgrBlocked = Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Taskmgr.exe'
 $gameDvrOff = (Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR' -Name AllowGameDVR -ErrorAction SilentlyContinue).AllowGameDVR
+$kioskNoDesktop = (Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer' -Name NoDesktop -ErrorAction SilentlyContinue).NoDesktop
 ${sharedCaches}
 ${groupProbes}
 [PSCustomObject]@{
@@ -683,8 +772,77 @@ ${groupProbes}
   printSpoolerDisabled = ($spooler -eq 'Disabled')
   taskManagerDisabled = [bool]$taskMgrBlocked
   gameBarSpotlightDisabled = ($gameDvrOff -eq 0)
+  kioskShellDisabled = ($kioskNoDesktop -eq 1)
 ${groupJsonFields}
 } | ConvertTo-Json -Compress`;
+}
+
+// ---------------------------------------------------------------------------
+// Per-feature status probe: same fields psStatus() computes, but scoped to
+// exactly ONE feature/group instead of all ~20 at once. Used after a single
+// row's Enable/Disable click so that action only costs one small guest-exec
+// round trip checking the one thing that changed, instead of re-running the
+// entire combined psStatus() script (every service/task/appx across every
+// group) just to refresh one badge - that full re-check is still exactly
+// right after "Apply recommended"/"ultra-lite preset" (many features changed
+// at once) but was needless, and slow, for a single toggle.
+function singleFeatureStatusPs(feature) {
+  const HAND_WRITTEN = {
+    defender: `$defender = (Get-MpPreference).DisableRealtimeMonitoring
+$tamper = (Get-MpComputerStatus).IsTamperProtected
+[PSCustomObject]@{ defenderDisabled = [bool]$defender; defenderTamperProtected = [bool]$tamper }`,
+    updates: `$wu = (Get-Service wuauserv).StartType
+[PSCustomObject]@{ updatesDisabled = ($wu -eq 'Disabled') }`,
+    firewall: `$fw = (Get-NetFirewallProfile | Select-Object -First 1).Enabled
+[PSCustomObject]@{ firewallDisabled = (-not [bool]$fw) }`,
+    bloat: `$diagTrack = (Get-Service DiagTrack).StartType
+[PSCustomObject]@{ bloatDisabled = ($diagTrack -eq 'Disabled') }`,
+    performance: `$fx = (Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects' -Name VisualFXSetting).VisualFXSetting
+[PSCustomObject]@{ performanceDisabled = ($fx -eq 2) }`,
+    search: `$searchRaw = (Get-ItemProperty -Path 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\WSearch' -Name Start -ErrorAction SilentlyContinue).Start
+[PSCustomObject]@{ searchDisabled = ($searchRaw -eq 4) }`,
+    onedrive: `$oneDriveRun = Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name OneDrive
+[PSCustomObject]@{ onedriveDisabled = (-not [bool]$oneDriveRun) }`,
+    widgetsCopilot: `$widgets = (Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name TaskbarDa).TaskbarDa
+[PSCustomObject]@{ widgetsCopilotDisabled = ($widgets -eq 0) }`,
+    shellExtras: `$shellHw = (Get-Service ShellHWDetection).StartType
+[PSCustomObject]@{ shellExtrasDisabled = ($shellHw -eq 'Disabled') }`,
+    printSpooler: `$spooler = (Get-Service Spooler).StartType
+[PSCustomObject]@{ printSpoolerDisabled = ($spooler -eq 'Disabled') }`,
+    taskManagerBlock: `$taskMgrBlocked = Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Taskmgr.exe'
+[PSCustomObject]@{ taskManagerDisabled = [bool]$taskMgrBlocked }`,
+    gameBarSpotlight: `$gameDvrOff = (Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR' -Name AllowGameDVR -ErrorAction SilentlyContinue).AllowGameDVR
+[PSCustomObject]@{ gameBarSpotlightDisabled = ($gameDvrOff -eq 0) }`,
+    kioskShell: `$kioskNoDesktop = (Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer' -Name NoDesktop -ErrorAction SilentlyContinue).NoDesktop
+[PSCustomObject]@{ kioskShellDisabled = ($kioskNoDesktop -eq 1) }`
+  };
+
+  if (HAND_WRITTEN[feature]) {
+    return `$ErrorActionPreference = 'SilentlyContinue'\n${HAND_WRITTEN[feature]} | ConvertTo-Json -Compress`;
+  }
+
+  const g = GRANULAR_GROUPS.find((x) => x.key === feature);
+  if (!g) throw new Error(`Unknown feature '${feature}'`);
+  const needsAppx = g.appx && g.appx.length;
+  const needsTasks = g.tasks && g.tasks.length;
+  const sharedCaches = [
+    needsAppx ? `$allAppxNames = (Get-AppxPackage -AllUsers -ErrorAction SilentlyContinue | Where-Object { -not $_.NonRemovable }).Name` : null,
+    needsTasks ? `$taskStateByPath = @{}
+foreach ($t in (Get-ScheduledTask -ErrorAction SilentlyContinue)) { $taskStateByPath[$t.TaskPath + $t.TaskName] = $t.State }` : null
+  ].filter(Boolean).join('\n');
+  return `$ErrorActionPreference = 'SilentlyContinue'
+${sharedCaches}
+${groupStatusProbePs(g)}
+[PSCustomObject]@{ ${g.key}Disabled = $${g.key}Disabled } | ConvertTo-Json -Compress`;
+}
+
+async function getSingleFeatureStatus(vmName, feature) {
+  const raw = await runPowerShell(vmName, singleFeatureStatusPs(feature), 15000);
+  try {
+    return JSON.parse(raw.trim());
+  } catch (e) {
+    throw new Error('Could not read guest status for this item: ' + e.message);
+  }
 }
 
 async function getGuestControlStatus(vmName) {
@@ -709,7 +867,8 @@ async function applyToggle(vmName, feature, enabled) {
     shellExtras: enabled ? psEnableShellExtras() : psDisableShellExtras(),
     printSpooler: enabled ? psEnablePrintSpooler() : psDisablePrintSpooler(),
     taskManagerBlock: enabled ? psEnableTaskManagerBlock() : psDisableTaskManagerBlock(),
-    gameBarSpotlight: enabled ? psEnableGameBarSpotlight() : psDisableGameBarSpotlight()
+    gameBarSpotlight: enabled ? psEnableGameBarSpotlight() : psDisableGameBarSpotlight(),
+    kioskShell: enabled ? psEnableKioskShell() : psDisableKioskShell()
   };
   // Every granular group above (Superfetch, telemetry, Xbox, Maps, touch
   // input, phone/messaging, Delivery Optimization, legacy peripherals,
@@ -733,11 +892,12 @@ const RECOMMENDED_FEATURES = ['defender', 'updates', 'bloat', 'performance'];
 // "RemoteApp-only ultra-lite" preset: everything in the recommended preset,
 // plus every toggle above that only matters for interactive desktop use
 // (search indexing, OneDrive sync, Widgets/Copilot, AutoPlay/WIA/shell
-// tracking, and headless mode's Task Manager/Settings/Game Bar/Spotlight
-// blocks). Deliberately still leaves Firewall AND Print Spooler alone -
-// those are functional, not cosmetic, and shouldn't be silently switched
-// off by a "make it lighter" button.
-const REMOTEAPP_ONLY_FEATURES = [...RECOMMENDED_FEATURES, 'search', 'onedrive', 'widgetsCopilot', 'shellExtras', 'taskManagerBlock', 'gameBarSpotlight'];
+// tracking, headless mode's Task Manager/Settings/Game Bar/Spotlight
+// blocks, and the full kiosk shell lockdown - no taskbar, no desktop, no
+// notifications). Deliberately still leaves Firewall AND Print Spooler
+// alone - those are functional, not cosmetic, and shouldn't be silently
+// switched off by a "make it lighter" button.
+const REMOTEAPP_ONLY_FEATURES = [...RECOMMENDED_FEATURES, 'search', 'onedrive', 'widgetsCopilot', 'shellExtras', 'taskManagerBlock', 'gameBarSpotlight', 'kioskShell'];
 
 async function applyRecommended(vmName) {
   const results = {};
@@ -768,7 +928,8 @@ module.exports = {
   psDisablePrintSpooler, psEnablePrintSpooler,
   psDisableTaskManagerBlock, psEnableTaskManagerBlock,
   psDisableGameBarSpotlight, psEnableGameBarSpotlight,
-  getGuestControlStatus, applyToggle, applyRecommended, applyRemoteAppOnlyPreset,
+  psDisableKioskShell, psEnableKioskShell,
+  getGuestControlStatus, getSingleFeatureStatus, applyToggle, applyRecommended, applyRemoteAppOnlyPreset,
   RECOMMENDED_FEATURES, REMOTEAPP_ONLY_FEATURES,
   BLOAT_SERVICES, BLOAT_TASKS, BLOAT_APPX, GRANULAR_GROUPS
 };

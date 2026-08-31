@@ -60,6 +60,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   guest: {
     status: (name) => ipcRenderer.invoke('guest:status', name),
+    statusOne: (name, feature) => ipcRenderer.invoke('guest:statusOne', name, feature),
     toggle: (name, feature, enabled) => ipcRenderer.invoke('guest:toggle', name, feature, enabled),
     applyRecommended: (name) => ipcRenderer.invoke('guest:applyRecommended', name),
     applyRemoteAppOnlyPreset: (name) => ipcRenderer.invoke('guest:applyRemoteAppOnlyPreset', name)

@@ -315,7 +315,7 @@ function vmRow(vm) {
       startDetailsAutoRefresh(vm.name);
       // Kick a fetch right away even if we already had cached data, so the
       // numbers are fresh the moment you actually look at them.
-      await refreshVmDetailsData(vm.name, { full: true });
+      await refreshVmDetailsData(vm.name, { stats: true, config: true, guestStatus: true });
       rerenderVmDetailsIfOpen(vm);
     }
   });
@@ -327,7 +327,7 @@ function vmRow(vm) {
 function startDetailsAutoRefresh(vmName) {
   if (dash.statsTimers[vmName]) return;
   dash.statsTimers[vmName] = setInterval(async () => {
-    await refreshVmDetailsData(vmName, { full: false });
+    await refreshVmDetailsData(vmName, { stats: true });
     const vm = (dash.vms || []).find((v) => v.name === vmName);
     if (vm) updateLiveStatsIfOpen(vm);
   }, 5000);
@@ -369,32 +369,41 @@ function updateLiveStatsIfOpen(vm) {
 }
 
 /**
- * Fetches fresh data and fills the cache. Three tiers, to avoid spawning
- * far more subprocesses than needed every tick:
- *  - `full`   (only on first expand): stats + config + guest status. The
- *             config read (virsh dumpxml + qemu-img info) and the guest
- *             status read (a PowerShell script over the guest agent) are
- *             both relatively slow/heavy and essentially static between
- *             ticks, so they only run once per expand, not on a timer.
- *  - default  (the 5s auto-refresh while a panel stays open): live stats
- *             only (CPU/RAM/disk/net) - config and guest status are left
- *             as-is from the last full fetch.
+ * Fetches fresh data and fills the cache. Each of stats/config/guestStatus
+ * is independently opt-in - callers only ask for what actually changed:
+ *  - stats:       cheap virsh-only reads (CPU/RAM/disk/net) - fine to pull
+ *                 on every 5s auto-refresh tick.
+ *  - config:      virsh dumpxml + domblkinfo - only actually changes after
+ *                 a Resources "Apply" (resize), so only that button asks
+ *                 for it.
+ *  - guestStatus: the combined ~20-item PowerShell status probe over the
+ *                 guest agent - the heaviest of the three by far. Only
+ *                 requested on first expand, and after "Apply
+ *                 recommended"/"ultra-lite preset" (since those change many
+ *                 features at once). A single row's own Enable/Disable
+ *                 click does NOT go through here at all - see the toggle
+ *                 button below, which fetches just that one feature via
+ *                 guest.statusOne() instead of re-running the whole probe.
  */
-async function refreshVmDetailsData(vmName, { full }) {
+async function refreshVmDetailsData(vmName, { stats = false, config = false, guestStatus = false } = {}) {
   if (!dash.details[vmName]) dash.details[vmName] = {};
   const entry = dash.details[vmName];
-  try {
-    entry.stats = await window.api.vmExtra.stats(vmName);
-    entry.statsAt = Date.now();
-  } catch (e) {
-    entry.statsError = e.message;
+  if (stats) {
+    try {
+      entry.stats = await window.api.vmExtra.stats(vmName);
+      entry.statsAt = Date.now();
+    } catch (e) {
+      entry.statsError = e.message;
+    }
   }
-  if (full) {
+  if (config) {
     try {
       entry.config = await window.api.vmExtra.config(vmName);
     } catch (e) {
       entry.statsError = entry.statsError || e.message;
     }
+  }
+  if (guestStatus) {
     try {
       entry.guestStatus = await window.api.guest.status(vmName);
       entry.guestError = null;
@@ -476,7 +485,7 @@ function renderVmDetails(vm) {
               await window.api.vmExtra.growDisk(vm.name, cfg.diskPath, Number(diskInput.value));
             }
             toast('Resources updated. Start the VM to apply.');
-            await refreshVmDetailsData(vm.name, { full: false });
+            await refreshVmDetailsData(vm.name, { stats: true, config: true });
             rerenderVmDetailsIfOpen(vm);
           } catch (e) {
             toast(e.message, true);
@@ -521,6 +530,9 @@ function renderVmDetails(vm) {
   // which section header a row is printed under below - purely a display
   // grouping, every row still has its own independent status badge/button.
   const FEATURES = [
+    ['kioskShell', 'Remote-session kiosk lockdown (no taskbar, desktop, or notifications - black screen + app windows only)', 'kioskShellDisabled',
+      'Strips every piece of shell chrome from a full desktop RDP session: no taskbar (auto-hidden and stripped of tray icons/clock/search/Task View/Widgets), no desktop icons or right-click menu (solid black background), no toast notifications or Action Center. Does not replace explorer.exe as the shell - Explorer keeps running to host app windows and the RemoteApp session, it just shows none of its own UI. Pair with the Task Manager/Settings block below so there\u2019s no way back to a normal desktop from inside the session. Restarts Explorer when applied - anything open will flash and briefly lose focus.', 'Remote session lockdown'],
+
     ['defender', 'Windows Defender (incl. real-time protection)', 'defenderDisabled', null, 'Security'],
     ['updates', 'Windows Update', 'updatesDisabled', null, 'Security'],
     ['firewall', 'Windows Firewall', 'firewallDisabled', null, 'Security'],
@@ -605,7 +617,16 @@ function renderVmDetails(vm) {
                 } else {
                   toast(`${label} ${disabled ? 'enabled' : 'disabled'}.`);
                 }
-                await refreshVmDetailsData(vm.name, { full: true });
+                // Only re-check the ONE thing that just changed - not the
+                // whole ~20-item probe, and not stats/config (irrelevant to
+                // a guest OS toggle). Merges straight into the cached
+                // guestStatus object so the re-render below is pure DOM,
+                // no other fetch involved.
+                const entry = dash.details[vm.name];
+                if (entry && entry.guestStatus) {
+                  const single = await window.api.guest.statusOne(vm.name, feature);
+                  Object.assign(entry.guestStatus, single);
+                }
                 rerenderVmDetailsIfOpen(vm);
               } catch (e) {
                 toast(e.message, true);
@@ -628,7 +649,7 @@ function renderVmDetails(vm) {
           try {
             await window.api.guest.applyRecommended(vm.name);
             toast('Applied recommended WinApps settings (Defender, Updates, background bloat, performance mode disabled).');
-            await refreshVmDetailsData(vm.name, { full: true });
+            await refreshVmDetailsData(vm.name, { guestStatus: true });
             rerenderVmDetailsIfOpen(vm);
           } catch (e) {
             toast(e.message, true);
@@ -644,8 +665,8 @@ function renderVmDetails(vm) {
           ev.target.disabled = true;
           try {
             await window.api.guest.applyRemoteAppOnlyPreset(vm.name);
-            toast('Applied RemoteApp-only ultra-lite preset (adds Search, OneDrive, Widgets/Copilot, Explorer extras, and Headless mode on top of the recommended set).');
-            await refreshVmDetailsData(vm.name, { full: true });
+            toast('Applied RemoteApp-only ultra-lite preset (adds Search, OneDrive, Widgets/Copilot, Explorer extras, Headless mode, and the full kiosk shell lockdown on top of the recommended set).');
+            await refreshVmDetailsData(vm.name, { guestStatus: true });
             rerenderVmDetailsIfOpen(vm);
           } catch (e) {
             toast(e.message, true);

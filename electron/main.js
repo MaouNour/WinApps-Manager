@@ -169,6 +169,7 @@ ipcMain.handle('vm:applyLibvirtOptimizations', (_e, name) => vmctl.applyLibvirtO
 
 // ---------- IPC: live Defender/Updates/Firewall/bloat-services control ----------
 ipcMain.handle('guest:status', (_e, name) => guestControl.getGuestControlStatus(name));
+ipcMain.handle('guest:statusOne', (_e, name, feature) => guestControl.getSingleFeatureStatus(name, feature));
 ipcMain.handle('guest:toggle', (_e, name, feature, enabled) => guestControl.applyToggle(name, feature, enabled));
 ipcMain.handle('guest:applyRecommended', (_e, name) => guestControl.applyRecommended(name));
 ipcMain.handle('guest:applyRemoteAppOnlyPreset', (_e, name) => guestControl.applyRemoteAppOnlyPreset(name));
