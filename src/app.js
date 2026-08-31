@@ -517,20 +517,50 @@ function renderVmDetails(vm) {
   guestBox.appendChild(h('h3', {}, 'Windows management'));
   panel.appendChild(guestBox);
 
+  // Each row is [feature, label, statusKey, hint, group]. `group` controls
+  // which section header a row is printed under below - purely a display
+  // grouping, every row still has its own independent status badge/button.
   const FEATURES = [
-    ['defender', 'Windows Defender (incl. real-time protection)', 'defenderDisabled'],
-    ['updates', 'Windows Update', 'updatesDisabled'],
-    ['firewall', 'Windows Firewall', 'firewallDisabled'],
-    ['performance', 'Optimize for performance (visual effects, power plan, hibernation)', 'performanceDisabled'],
-    ['bloat', 'Background bloat services/tasks', 'bloatDisabled'],
+    ['defender', 'Windows Defender (incl. real-time protection)', 'defenderDisabled', null, 'Security'],
+    ['updates', 'Windows Update', 'updatesDisabled', null, 'Security'],
+    ['firewall', 'Windows Firewall', 'firewallDisabled', null, 'Security'],
+
+    ['telemetryDiag', 'Telemetry, error reporting & compatibility tracking', 'telemetryDiagDisabled',
+      'Connected User Experience/telemetry upload (DiagTrack), Windows Error Reporting, the Program Compatibility Assistant, and their related scheduled tasks. Background upload/scan traffic only - no effect on any app you actually run.', 'Telemetry & diagnostics'],
+
+    ['performance', 'Optimize for performance (visual effects, power plan, hibernation)', 'performanceDisabled', null, 'Disk & memory'],
+    ['superfetch', 'Superfetch / SysMain (disk prefetch cache)', 'superfetchDisabled',
+      'Pre-loads frequently-used app data into RAM to speed up launches on a spinning disk. On a VM this just spends RAM/CPU maintaining a cache for a virtual disk already backed by the host\u2019s own disk cache.', 'Disk & memory'],
+    ['deliveryOptimization', 'Delivery Optimization (peer-to-peer update sharing)', 'deliveryOptimizationDisabled',
+      'Lets this machine upload Windows Update/Store payloads to other PCs, on top of downloading its own. Windows Update itself is the separate toggle above.', 'Disk & memory'],
+    ['maintenanceTasks', 'Scheduled maintenance & housekeeping tasks', 'maintenanceTasksDisabled',
+      'Disk-check proxy, WinSAT benchmarking, Family Safety monitoring, Cloud Experience Host setup, and scheduled disk defrag - the last of which is wasted guest disk I/O against a file on the host\u2019s own filesystem.', 'Disk & memory'],
+
     ['search', 'Windows Search indexing (search box itself still works - see tooltip)', 'searchDisabled',
-      'Turns off the background file-content indexer (SearchIndexer.exe), the actual idle CPU/disk/RAM cost. The taskbar/Start search box is a separate component that keeps answering app-launcher queries from its own local cache either way - that\u2019s normal, not this setting failing to apply.'],
-    ['onedrive', 'OneDrive background sync', 'onedriveDisabled'],
-    ['widgetsCopilot', 'Widgets & Copilot (taskbar)', 'widgetsCopilotDisabled'],
-    ['shellExtras', 'Explorer extras (AutoPlay, image acquisition, recent-file tracking)', 'shellExtrasDisabled'],
-    ['printSpooler', 'Print Spooler (only if you never print)', 'printSpoolerDisabled'],
-    ['headlessShell', 'Headless mode (block Task Manager & Settings, disable Game Bar/Spotlight)', 'headlessShellDisabled',
-      'Blocks Task Manager, Control Panel and Settings from launching at all, and turns off Game Bar/Game DVR and Spotlight/Start suggestions. Doesn\u2019t touch the shell itself (explorer.exe) - RemoteApp launches already never show a desktop/taskbar, this just locks down what\u2019s reachable if you do open a full desktop session.']
+      'Turns off the background file-content indexer (SearchIndexer.exe), the actual idle CPU/disk/RAM cost. The taskbar/Start search box (SearchApp.exe/SearchHost.exe) is a separate component that keeps answering app-launcher queries from its own local cache either way - that\u2019s normal, not this setting failing to apply.', 'Search & indexing'],
+
+    ['widgetsCopilot', 'Widgets & Copilot (taskbar)', 'widgetsCopilotDisabled', null, 'Shell & input'],
+    ['shellExtras', 'Explorer extras (AutoPlay, image acquisition, recent-file tracking)', 'shellExtrasDisabled', null, 'Shell & input'],
+    ['touchInput', 'Touch keyboard & handwriting panel (TextInputHost)', 'touchInputDisabled',
+      'Stops the service behind TextInputHost.exe\u2019s on-screen touch keyboard/handwriting panel. Physical-keyboard typing and IME/language switching over RDP are unaffected - this only removes the touch panel a VM with no touchscreen never needs.', 'Shell & input'],
+    ['taskManagerBlock', 'Task Manager & Control Panel/Settings access', 'taskManagerDisabled',
+      'Blocks Taskmgr.exe, Control Panel and Settings from launching at all (via Image File Execution Options, machine-wide). Doesn\u2019t touch the shell itself (explorer.exe) - RemoteApp launches already never show a desktop/taskbar, this just locks down what\u2019s reachable if you do open a full desktop session.', 'Shell & input'],
+    ['gameBarSpotlight', 'Game Bar/DVR & Spotlight suggestions', 'gameBarSpotlightDisabled',
+      'Turns off Game Bar/Game DVR background capture hooks and Spotlight/lock-screen tips/Start suggestions - periodic background network calls fetching content nobody sees headlessly.', 'Shell & input'],
+
+    ['onedrive', 'OneDrive background sync', 'onedriveDisabled', null, 'Consumer features'],
+    ['xboxGaming', 'Xbox & gaming services', 'xboxGamingDisabled',
+      'Xbox account/game-save sync services plus the Xbox app and gaming overlay. Nothing here starts unless a game or the Xbox app actually launches.', 'Consumer features'],
+    ['mapsLocation', 'Maps & location services', 'mapsLocationDisabled',
+      'Offline-maps download/update service, the Geolocation service, and the Maps app - no GPS or real physical location for a VM to report.', 'Consumer features'],
+    ['phoneMessaging', 'Phone Link, messaging & wallet', 'phoneMessagingDisabled',
+      'Phone Link (Your Phone) companion services, SMS/messaging sync, contacts indexing, and Wallet - dead weight without a phone ever paired to this VM.', 'Consumer features'],
+    ['consumerApps', 'Pre-installed consumer apps (Bing content, media, misc.)', 'consumerAppsDisabled',
+      'Stock Bing news/weather/finance/sports/food/travel tiles, Solitaire, People, Get Started, To Do, Clipchamp, LinkedIn, Office Hub, Skype, Mixed Reality, 3D Viewer, Print 3D, Feedback Hub, and the stock Alarms/Camera/Sound Recorder apps.', 'Consumer features'],
+
+    ['printSpooler', 'Print Spooler (only if you never print)', 'printSpoolerDisabled', null, 'Legacy peripherals'],
+    ['legacyPeripherals', 'Legacy peripherals & network discovery', 'legacyPeripheralsDisabled',
+      'Fax, offline-files caching, biometric enrollment, UPnP/SSDP discovery, distributed link tracking, Media Player network sharing, Remote Registry, smart-card/NFC payment support, and Shared PC mode.', 'Legacy peripherals']
   ];
 
   if (entry.guestStatus) {
@@ -540,7 +570,12 @@ function renderVmDetails(vm) {
         'Defender Tamper Protection is ON in this VM - Microsoft blocks scripted changes to Defender while it\u2019s on. Turn it off by hand first: Windows Security \u2192 Virus & threat protection \u2192 Manage settings \u2192 Tamper Protection.'));
     }
     const list = h('div', { class: 'check-list' });
-    for (const [feature, label, statusKey, hint] of FEATURES) {
+    let lastGroup = null;
+    for (const [feature, label, statusKey, hint, group] of FEATURES) {
+      if (group !== lastGroup) {
+        list.appendChild(h('div', { class: 'sub', style: 'margin-top:10px; font-weight:600' }, group));
+        lastGroup = group;
+      }
       const disabled = !!status[statusKey];
       const item = h('div', { class: 'check-item' }, [
         h('div', {}, [h('div', hint ? { class: 'label', title: hint } : { class: 'label' }, label)]),
@@ -551,6 +586,13 @@ function renderVmDetails(vm) {
             onclick: async (ev) => {
               ev.target.disabled = true;
               try {
+                // Always drives the whole group to the target state, even
+                // if some of its services were already off (e.g. a stock
+                // image) - so one click always converges the entire row,
+                // and the badge only flips to "disabled" once every item
+                // in it actually is (see groupStatusProbePs in
+                // guestControl.js), never from a single item happening to
+                // already match.
                 const result = await window.api.guest.toggle(vm.name, feature, disabled /* enable if currently disabled */);
                 // The apply script itself verifies the change actually
                 // stuck (see guestControl.js) and reports a distinct
@@ -613,7 +655,7 @@ function renderVmDetails(vm) {
         }
       }, 'Apply RemoteApp-only ultra-lite preset')
     ]));
-    guestBox.appendChild(h('div', { class: 'sub' }, 'Firewall and Print Spooler are left as-is by both presets - toggle them individually above if you want them off too. The ultra-lite preset targets desktop-shell-only overhead (search indexing, OneDrive, Widgets/Copilot, Explorer tracking, Task Manager/Settings/Game Bar/Spotlight) that per-app RemoteApp sessions never touch anyway - safe even if you sometimes still open a full desktop, just less needed then. Headless mode does not remove the desktop shell itself - see its tooltip above for why.'));
+    guestBox.appendChild(h('div', { class: 'sub' }, 'Firewall, Print Spooler and the granular rows below (Telemetry, Xbox, Maps, Phone/Messaging, Legacy peripherals, etc.) are left as-is by both presets - toggle them individually above if you want them off too, each one converges its whole row and only shows "disabled" once everything in it actually is. The ultra-lite preset targets desktop-shell-only overhead (search indexing, OneDrive, Widgets/Copilot, Explorer tracking, Task Manager/Settings, Game Bar/Spotlight) that per-app RemoteApp sessions never touch anyway - safe even if you sometimes still open a full desktop, just less needed then. Neither preset removes the desktop shell itself (explorer.exe) - see the Task Manager row\u2019s tooltip above for why.'));
   } else if (entry.guestError) {
     guestBox.appendChild(h('div', { class: 'sub' }, 'Could not read guest status (VM must be running with the guest agent up): ' + entry.guestError));
   } else {

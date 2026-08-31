@@ -71,6 +71,210 @@ const BLOAT_APPX = [
   'windowsalarms', 'windowscamera', 'windowssoundrecorder', 'xboxgamingoverlay', 'yourphone'
 ];
 
+// ---------------------------------------------------------------------------
+// Granular per-category toggles. These break the single "Background bloat
+// services/tasks" checkbox above into individually-named entries so the
+// dashboard can show a separate, per-category on/off badge instead of one
+// row that used to stand in for ~30 unrelated services/apps at once.
+//
+// IMPORTANT - why these are a SEPARATE list from BLOAT_SERVICES/TASKS/APPX
+// above rather than reusing them: BLOAT_SERVICES/TASKS/APPX above stays
+// exactly as-is because it still drives the first-boot bootstrap checkbox
+// (unattend.js) and the "Apply recommended"/"ultra-lite" preset buttons -
+// nothing here changes that path. But if a *live per-service* toggle below
+// touched the very same service as another live toggle, the two badges
+// could disagree about whether that one service counts as "on" - the exact
+// bug already called out for WSearch (see the 'search' toggle's comment
+// above the bloat list). So every service/task/appx id below appears in
+// at most ONE group, and no group here duplicates a service already owned
+// by its own standalone toggle (search/onedrive/widgetsCopilot/shellExtras/
+// printSpooler/taskManagerBlock/gameBarSpotlight, all further down).
+//
+// Every group's live "disabled" badge is computed by checking that ALL of
+// its services (and, where present, all of its appx patterns) are actually
+// off - not just one representative item - which is what actually fixes
+// the report of a VM showing most of this section as "disabled" from a
+// stock install that had never been touched: the old single 'bloat' badge
+// only ever checked one service (DiagTrack) for the entire ~30-item list.
+const GRANULAR_GROUPS = [
+  {
+    key: 'superfetch',
+    group: 'Disk & memory',
+    label: 'Superfetch / SysMain (disk prefetch cache)',
+    hint: 'Pre-loads frequently-used app data into RAM to speed up launches on a spinning disk. On a VM this just spends RAM/CPU maintaining a cache for a virtual disk that\u2019s already backed by the host\u2019s own disk cache - safe to turn off.',
+    services: ['SysMain']
+  },
+  {
+    key: 'telemetryDiag',
+    group: 'Telemetry & diagnostics',
+    label: 'Telemetry, error reporting & compatibility tracking',
+    hint: 'Connected User Experience/telemetry upload (DiagTrack), Windows Error Reporting, the Program Compatibility Assistant, and their related scheduled tasks (CEIP, compat appraiser, feedback prompts, SQM, disk diagnostics). Background upload/scan traffic only - no effect on any app you actually run.',
+    services: ['DiagTrack', 'dmwappushservice', 'WerSvc', 'PcaSvc', 'diagnosticshub.standardcollector.service', 'wercplsupport'],
+    tasks: [
+      '\\Microsoft\\Windows\\Application Experience\\Microsoft Compatibility Appraiser',
+      '\\Microsoft\\Windows\\Application Experience\\ProgramDataUpdater',
+      '\\Microsoft\\Windows\\Application Experience\\StartupAppTask',
+      '\\Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator',
+      '\\Microsoft\\Windows\\Customer Experience Improvement Program\\UsbCeip',
+      '\\Microsoft\\Windows\\Feedback\\Siuf\\DmClient',
+      '\\Microsoft\\Windows\\Feedback\\Siuf\\DmClientOnScenarioDownload',
+      '\\Microsoft\\Windows\\Windows Error Reporting\\QueueReporting',
+      '\\Microsoft\\Windows\\PI\\Sqm-Tasks',
+      '\\Microsoft\\Windows\\NetTrace\\GatherNetworkInfo',
+      '\\Microsoft\\Windows\\DiskDiagnostic\\Microsoft-Windows-DiskDiagnosticDataCollector'
+    ]
+  },
+  {
+    key: 'xboxGaming',
+    group: 'Consumer features',
+    label: 'Xbox & gaming services',
+    hint: 'Xbox account/game-save sync services, plus the Xbox app and the gaming overlay. None of this starts unless a game or the Xbox app actually launches, and nothing plays games on a RemoteApp VM.',
+    services: ['XblAuthManager', 'XblGameSave', 'XboxNetApiSvc', 'XboxGipSvc'],
+    appx: ['xboxapp', 'xboxgamingoverlay']
+  },
+  {
+    key: 'mapsLocation',
+    group: 'Consumer features',
+    label: 'Maps & location services',
+    hint: 'The offline-maps download/update service, the Geolocation service, and the Maps app itself - there\u2019s no GPS or real physical location for a VM to report.',
+    services: ['MapsBroker', 'lfsvc'],
+    tasks: ['\\Microsoft\\Windows\\Maps\\MapsUpdateTask', '\\Microsoft\\Windows\\Location\\Notifications'],
+    appx: ['windowsmaps']
+  },
+  {
+    key: 'touchInput',
+    group: 'Shell & input',
+    label: 'Touch keyboard & handwriting panel (TextInputHost)',
+    hint: 'Stops the service behind TextInputHost.exe\u2019s on-screen touch keyboard/handwriting panel. Physical-keyboard typing and language/IME switching over RDP are handled elsewhere and keep working - this only removes the touch panel nobody uses on a VM with no touchscreen.',
+    services: ['TabletInputService']
+  },
+  {
+    key: 'phoneMessaging',
+    group: 'Consumer features',
+    label: 'Phone Link, messaging & wallet',
+    hint: 'Phone Link (Your Phone) companion services, SMS/messaging sync, contacts indexing, and Wallet - all dead weight without a phone ever paired to this VM.',
+    services: ['PhoneSvc', 'MessagingService', 'PimIndexMaintenanceSvc', 'UnistoreSvc', 'CDPUserSvc', 'WalletService'],
+    appx: ['yourphone', 'messaging', 'communicationsapps']
+  },
+  {
+    key: 'deliveryOptimization',
+    group: 'Disk & memory',
+    label: 'Delivery Optimization (peer-to-peer update sharing)',
+    hint: 'Lets this machine upload Windows Update/Store payloads to other PCs on your network or the internet, on top of downloading its own. This only turns off the upload/sharing layer - Windows Update itself is the separate \'updates\' toggle above.',
+    services: ['DoSvc']
+  },
+  {
+    key: 'legacyPeripherals',
+    group: 'Legacy peripherals',
+    label: 'Legacy peripherals & network discovery',
+    hint: 'Fax, offline-files caching, biometric (fingerprint/face) enrollment, UPnP/SSDP device discovery, distributed link tracking, Media Player network sharing, Remote Registry, smart-card/NFC payment support, and Shared PC mode - none of this applies to a headless per-app RemoteApp VM.',
+    services: ['Fax', 'CscService', 'WbioSrvc', 'SSDPSRV', 'upnphost', 'TrkWks', 'WMPNetworkSvc', 'RemoteRegistry', 'SEMgrSvc', 'shpamsvc', 'icssvc', 'RetailDemo']
+  },
+  {
+    key: 'maintenanceTasks',
+    group: 'Disk & memory',
+    label: 'Scheduled maintenance & housekeeping tasks',
+    hint: 'Periodic disk-check proxy, WinSAT benchmarking, Family Safety monitoring, the Cloud Experience Host setup task, and scheduled disk defrag. Defrag in particular is wasted guest disk I/O against what is, physically, a file on the host\u2019s own (likely SSD) filesystem.',
+    tasks: [
+      '\\Microsoft\\Windows\\Autochk\\Proxy',
+      '\\Microsoft\\Windows\\Maintenance\\WinSAT',
+      '\\Microsoft\\Windows\\Shell\\FamilySafetyMonitor',
+      '\\Microsoft\\Windows\\Shell\\FamilySafetyRefreshTask',
+      '\\Microsoft\\Windows\\CloudExperienceHost\\CreateObjectTask',
+      '\\Microsoft\\Windows\\Defrag\\ScheduledDefrag'
+    ]
+  },
+  {
+    key: 'consumerApps',
+    group: 'Consumer features',
+    label: 'Pre-installed consumer apps (Bing content, media, misc.)',
+    hint: 'The stock Bing news/weather/finance/sports/food/travel tiles, Solitaire, People, Get Started/Tips, To Do, Clipchamp, LinkedIn, Get Help, Office Hub, Skype, Mixed Reality Portal, 3D Viewer, Print 3D, Feedback Hub, and the stock Alarms/Camera/Sound Recorder apps. None of these launch on their own - this just removes them.',
+    appx: ['bingweather', 'bingnews', 'bingfinance', 'bingsports', 'binghealthandfitness', 'bingfoodanddrink', 'bingtravel', 'zunemusic', 'zunevideo', 'solitaire', 'people', 'getstarted', 'todos', 'clipchamp', 'linkedin', 'gethelp', 'officehub', 'skypeapp', 'mixedreality', '3dviewer', 'print3d', 'feedbackhub', 'windowsalarms', 'windowscamera', 'windowssoundrecorder']
+  }
+];
+
+function svcArr(services) {
+  return services.map((s) => `'${s}'`).join(',');
+}
+function taskArr(tasks) {
+  return tasks.map((t) => `'${t.replace(/'/g, "''")}'`).join(',');
+}
+function appxArr(appx) {
+  return appx.map((a) => `'*${a}*'`).join(',');
+}
+
+/** Builds the disable-everything-in-this-group PS payload. Always sets the
+ * full group to "off" regardless of its current state, so clicking Disable
+ * on a partially-disabled group (e.g. from a stock image that already had
+ * one service off) still brings the rest of it into line. */
+function psDisableGroup(g) {
+  const parts = [`$ErrorActionPreference = 'SilentlyContinue'`];
+  if (g.services && g.services.length) {
+    parts.push(`$services = @(${svcArr(g.services)})`);
+    parts.push(`foreach ($s in $services) { sc.exe config $s start=disabled 2>$null; sc.exe stop $s 2>$null }`);
+  }
+  if (g.tasks && g.tasks.length) {
+    parts.push(`$tasks = @(${taskArr(g.tasks)})`);
+    parts.push(`foreach ($t in $tasks) { schtasks /Change /TN $t /Disable 2>$null }`);
+  }
+  if (g.appx && g.appx.length) {
+    parts.push(`$appx = @(${appxArr(g.appx)})`);
+    parts.push(`foreach ($pattern in $appx) { Get-AppxPackage -AllUsers $pattern | Remove-AppxPackage -ErrorAction SilentlyContinue }`);
+  }
+  parts.push(`Write-Output "${g.key}-disabled"`);
+  return parts.join('\n');
+}
+
+function psEnableGroup(g) {
+  const parts = [`$ErrorActionPreference = 'SilentlyContinue'`];
+  if (g.services && g.services.length) {
+    parts.push(`$services = @(${svcArr(g.services)})`);
+    parts.push(`foreach ($s in $services) { sc.exe config $s start=demand 2>$null }`);
+  }
+  if (g.tasks && g.tasks.length) {
+    parts.push(`$tasks = @(${taskArr(g.tasks)})`);
+    parts.push(`foreach ($t in $tasks) { schtasks /Change /TN $t /Enable 2>$null }`);
+  }
+  // Appx packages removed by the disable side are not reinstalled here -
+  // same as the existing psEnableBloat above, removal isn't auto-reversed.
+  parts.push(`Write-Output "${g.key}-enabled"`);
+  return parts.join('\n');
+}
+
+/** PS snippet (to be spliced into psStatus below) that computes one
+ * `$<key>Disabled` boolean per group: true only if EVERY service in the
+ * group is Disabled, EVERY listed appx pattern has 0 packages left, and
+ * (for task-only groups) every task's State is Disabled. A group with
+ * nothing installed/matched at all is NOT reported as disabled (avoids a
+ * false-positive "everything's off" on a group that never had 0 items). */
+function groupStatusProbePs(g) {
+  const lines = [];
+  const checks = [];
+  if (g.services && g.services.length) {
+    lines.push(`$${g.key}Svc = @(${svcArr(g.services)}) | ForEach-Object { (Get-ItemProperty -Path "HKLM:\\SYSTEM\\CurrentControlSet\\Services\\$_" -Name Start -ErrorAction SilentlyContinue).Start }`);
+    lines.push(`$${g.key}SvcOff = ($${g.key}Svc.Count -gt 0) -and (($${g.key}Svc | Where-Object { $_ -ne 4 }).Count -eq 0)`);
+    checks.push(`$${g.key}SvcOff`);
+  }
+  if (g.appx && g.appx.length) {
+    // Get-AppxPackage's -Name takes one wildcard string, not an array, so
+    // each pattern is checked separately and the matches summed - same
+    // per-pattern loop shape as the disable/remove side above.
+    lines.push(`$${g.key}AppxLeft = (@(${appxArr(g.appx)}) | ForEach-Object { Get-AppxPackage -AllUsers $_ -ErrorAction SilentlyContinue } | Measure-Object).Count`);
+    checks.push(`($${g.key}AppxLeft -eq 0)`);
+  }
+  if (g.tasks && g.tasks.length) {
+    lines.push(`$${g.key}TaskStates = @(${taskArr(g.tasks)}) | ForEach-Object {
+  $tp = $_.Substring(0, $_.LastIndexOf('\\') + 1)
+  $tn = $_.Substring($_.LastIndexOf('\\') + 1)
+  (Get-ScheduledTask -TaskPath $tp -TaskName $tn -ErrorAction SilentlyContinue).State
+}`);
+    lines.push(`$${g.key}TasksOff = ($${g.key}TaskStates.Count -gt 0) -and (($${g.key}TaskStates | Where-Object { $_ -ne 'Disabled' }).Count -eq 0)`);
+    checks.push(`$${g.key}TasksOff`);
+  }
+  lines.push(`$${g.key}Disabled = ${checks.join(' -and ')}`);
+  return lines.join('\n');
+}
+
 function psDisableDefender() {
   // Belt-and-suspenders: Set-MpPreference for the live session, plus the
   // equivalent Group Policy registry keys so the settings stick across
@@ -384,40 +588,54 @@ Write-Output "printspooler-enabled"`;
 // bug this VM management page has already needed fixing once (see the
 // Windows Search fix above). IFEO is keyed by executable name, not by
 // user, so it applies machine-wide regardless of who's logged in.
-function psDisableHeadlessShell() {
+// Split from the old combined "Headless mode" toggle into two separate,
+// clearly-named entries per the dashboard request: what actually blocks
+// Task Manager/Settings should say so on its own, not be bundled together
+// with the unrelated Game Bar/Spotlight registry tweaks below it.
+function psDisableTaskManagerBlock() {
   return `$ErrorActionPreference = 'SilentlyContinue'
 foreach ($exe in @('Taskmgr.exe', 'SystemSettings.exe', 'control.exe')) {
   $ifeo = "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\$exe"
   New-Item -Path $ifeo -Force | Out-Null
   Set-ItemProperty -Path $ifeo -Name Debugger -Value 'cmd.exe /c exit' -Type String
 }
-# Game Bar / Game DVR - background capture hooks with no purpose on a VM
-# nobody games on; machine-wide policy, not per-user.
+$raw = Test-Path "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Taskmgr.exe"
+if ($raw) { Write-Output "taskmanagerblock-disabled" } else { Write-Output "taskmanagerblock-disable-failed-check-permissions" }`;
+}
+function psEnableTaskManagerBlock() {
+  return `$ErrorActionPreference = 'SilentlyContinue'
+foreach ($exe in @('Taskmgr.exe', 'SystemSettings.exe', 'control.exe')) {
+  Remove-Item -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\$exe" -Recurse -Force
+}
+Write-Output "taskmanagerblock-enabled"`;
+}
+
+// Game Bar / Game DVR (background capture hooks) + Spotlight/lock-screen
+// tips/Start suggestions (periodic background network calls fetching
+// content nobody sees headlessly) - both machine-wide policy, not per-user.
+function psDisableGameBarSpotlight() {
+  return `$ErrorActionPreference = 'SilentlyContinue'
 $gdvr = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR'
 New-Item -Path $gdvr -Force | Out-Null
 Set-ItemProperty -Path $gdvr -Name AllowGameDVR -Value 0 -Type DWord
-# Spotlight/lock-screen tips/Start suggestions - periodic background
-# network calls fetching content nobody will ever see headlessly.
 $cc = 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent'
 New-Item -Path $cc -Force | Out-Null
 Set-ItemProperty -Path $cc -Name DisableWindowsSpotlightFeatures -Value 1 -Type DWord
 Set-ItemProperty -Path $cc -Name DisableSoftLanding -Value 1 -Type DWord
 Set-ItemProperty -Path $cc -Name DisableThirdPartySuggestions -Value 1 -Type DWord
-$raw = Test-Path "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Taskmgr.exe"
-if ($raw) { Write-Output "headlessshell-disabled" } else { Write-Output "headlessshell-disable-failed-check-permissions" }`;
+Write-Output "gamebarspotlight-disabled"`;
 }
-function psEnableHeadlessShell() {
+function psEnableGameBarSpotlight() {
   return `$ErrorActionPreference = 'SilentlyContinue'
-foreach ($exe in @('Taskmgr.exe', 'SystemSettings.exe', 'control.exe')) {
-  Remove-Item -Path "HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\$exe" -Recurse -Force
-}
 Remove-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR' -Name AllowGameDVR
 Remove-Item -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent' -Recurse -Force
-Write-Output "headlessshell-enabled"`;
+Write-Output "gamebarspotlight-enabled"`;
 }
 
 // Live status probe used by the Dashboard toggle badges.
 function psStatus() {
+  const groupProbes = GRANULAR_GROUPS.map(groupStatusProbePs).join('\n');
+  const groupJsonFields = GRANULAR_GROUPS.map((g) => `  ${g.key}Disabled = $${g.key}Disabled`).join('\n');
   return `$ErrorActionPreference = 'SilentlyContinue'
 $defender = (Get-MpPreference).DisableRealtimeMonitoring
 $tamper = (Get-MpComputerStatus).IsTamperProtected
@@ -434,7 +652,9 @@ $oneDriveRun = Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\Curr
 $widgets = (Get-ItemProperty -Path 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced' -Name TaskbarDa).TaskbarDa
 $shellHw = (Get-Service ShellHWDetection).StartType
 $spooler = (Get-Service Spooler).StartType
-$headlessTM = Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Taskmgr.exe'
+$taskMgrBlocked = Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Image File Execution Options\\Taskmgr.exe'
+$gameDvrOff = (Get-ItemProperty -Path 'HKLM:\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR' -Name AllowGameDVR -ErrorAction SilentlyContinue).AllowGameDVR
+${groupProbes}
 [PSCustomObject]@{
   defenderDisabled = [bool]$defender
   defenderTamperProtected = [bool]$tamper
@@ -447,7 +667,9 @@ $headlessTM = Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\
   widgetsCopilotDisabled = ($widgets -eq 0)
   shellExtrasDisabled = ($shellHw -eq 'Disabled')
   printSpoolerDisabled = ($spooler -eq 'Disabled')
-  headlessShellDisabled = [bool]$headlessTM
+  taskManagerDisabled = [bool]$taskMgrBlocked
+  gameBarSpotlightDisabled = ($gameDvrOff -eq 0)
+${groupJsonFields}
 } | ConvertTo-Json -Compress`;
 }
 
@@ -472,8 +694,18 @@ async function applyToggle(vmName, feature, enabled) {
     widgetsCopilot: enabled ? psEnableWidgetsCopilot() : psDisableWidgetsCopilot(),
     shellExtras: enabled ? psEnableShellExtras() : psDisableShellExtras(),
     printSpooler: enabled ? psEnablePrintSpooler() : psDisablePrintSpooler(),
-    headlessShell: enabled ? psEnableHeadlessShell() : psDisableHeadlessShell()
+    taskManagerBlock: enabled ? psEnableTaskManagerBlock() : psDisableTaskManagerBlock(),
+    gameBarSpotlight: enabled ? psEnableGameBarSpotlight() : psDisableGameBarSpotlight()
   };
+  // Every granular group above (Superfetch, telemetry, Xbox, Maps, touch
+  // input, phone/messaging, Delivery Optimization, legacy peripherals,
+  // maintenance tasks, consumer apps) gets its toggle wired up here from
+  // one shared pair of functions instead of one map entry each - same
+  // "always converge to the target state" behavior as every hand-written
+  // entry above (see psDisableGroup's doc comment).
+  for (const g of GRANULAR_GROUPS) {
+    map[g.key] = enabled ? psEnableGroup(g) : psDisableGroup(g);
+  }
   if (!map[feature]) throw new Error(`Unknown feature '${feature}'`);
   const out = await runPowerShell(vmName, map[feature], 30000);
   return out.trim();
@@ -491,7 +723,7 @@ const RECOMMENDED_FEATURES = ['defender', 'updates', 'bloat', 'performance'];
 // blocks). Deliberately still leaves Firewall AND Print Spooler alone -
 // those are functional, not cosmetic, and shouldn't be silently switched
 // off by a "make it lighter" button.
-const REMOTEAPP_ONLY_FEATURES = [...RECOMMENDED_FEATURES, 'search', 'onedrive', 'widgetsCopilot', 'shellExtras', 'headlessShell'];
+const REMOTEAPP_ONLY_FEATURES = [...RECOMMENDED_FEATURES, 'search', 'onedrive', 'widgetsCopilot', 'shellExtras', 'taskManagerBlock', 'gameBarSpotlight'];
 
 async function applyRecommended(vmName) {
   const results = {};
@@ -520,8 +752,9 @@ module.exports = {
   psDisableWidgetsCopilot, psEnableWidgetsCopilot,
   psDisableShellExtras, psEnableShellExtras,
   psDisablePrintSpooler, psEnablePrintSpooler,
-  psDisableHeadlessShell, psEnableHeadlessShell,
+  psDisableTaskManagerBlock, psEnableTaskManagerBlock,
+  psDisableGameBarSpotlight, psEnableGameBarSpotlight,
   getGuestControlStatus, applyToggle, applyRecommended, applyRemoteAppOnlyPreset,
   RECOMMENDED_FEATURES, REMOTEAPP_ONLY_FEATURES,
-  BLOAT_SERVICES, BLOAT_TASKS, BLOAT_APPX
+  BLOAT_SERVICES, BLOAT_TASKS, BLOAT_APPX, GRANULAR_GROUPS
 };
