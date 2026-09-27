@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const { run } = require('./exec');
 const { buildDomainXml } = require('./libvirtXml');
-const { buildSeedIso } = require('./unattend');
+const { buildSeedIso, buildAutounattendXml } = require('./unattend');
 const { ensureVirtioIso, ensureWindowsIso } = require('./isoAcquire');
 const { openViewer } = require('./vmctl');
 const { VM_IMAGES_DIR, SEED_ISO_DIR, VM_META_DIR, findOvmf } = require('./paths');
@@ -99,6 +99,29 @@ async function createVm(opts, onProgress = () => {}) {
     (line) => report('seed', 25, line)
   );
 
+  // autounattend.xml ALSO goes on a dedicated virtual floppy (a plain host
+  // directory exposed to the guest as a FAT floppy - see libvirtXml.js) in
+  // addition to the seed CD above. The floppy is the one location every
+  // version of Windows Setup is documented to check first, no exceptions;
+  // a second CD-ROM's answer file, by contrast, was confirmed NOT to get
+  // picked up in testing. Keeping it on both costs nothing - whichever one
+  // Setup finds first wins.
+  let answerFileDir = null;
+  if (!interactiveInstall) {
+    answerFileDir = path.join(SEED_ISO_DIR, `${opts.name}-floppy`);
+    fs.rmSync(answerFileDir, { recursive: true, force: true });
+    fs.mkdirSync(answerFileDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(answerFileDir, 'autounattend.xml'),
+      buildAutounattendXml({
+        username: opts.username,
+        password: opts.password,
+        computerName: opts.name.toUpperCase().slice(0, 15),
+        osTargetHint: opts.osTargetHint
+      })
+    );
+  }
+
   report('xml', 35, 'Generating libvirt domain XML...');
   const xml = buildDomainXml({
     name: opts.name,
@@ -111,6 +134,7 @@ async function createVm(opts, onProgress = () => {}) {
     seedIsoPath,
     ovmf,
     nvramPath,
+    answerFileDir,
     memballoon: opts.memballoon !== false,
     osId: guessLibosinfoId(opts.osTargetHint),
     cpuPinning: opts.cpuPinning || null,

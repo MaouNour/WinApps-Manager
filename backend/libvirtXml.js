@@ -15,7 +15,9 @@ function randomMac() {
  *  network ('default'), memballoon (bool),
  *  cpuPinning: [{vcpu, cpuset}] | null, topology: {sockets,dies,clusters,cores,threads} | null,
  *  osVariant label metadata (win10/win11), mac (optional), secureBoot (bool, default true,
- *  ignored when firmware='bios'), firmware ('uefi' | 'bios', default 'uefi')
+ *  ignored when firmware='bios'), firmware ('uefi' | 'bios', default 'uefi'),
+ *  answerFileDir (optional - a host directory containing just autounattend.xml,
+ *  exposed to the guest as a virtual floppy disk; see below)
  */
 function buildDomainXml(opts) {
   const {
@@ -37,7 +39,8 @@ function buildDomainXml(opts) {
     mac = randomMac(),
     uuid = crypto.randomUUID(),
     secureBoot = true,
-    firmware = 'uefi'
+    firmware = 'uefi',
+    answerFileDir = null
   } = opts;
 
   const useUefi = firmware !== 'bios';
@@ -127,6 +130,25 @@ function buildDomainXml(opts) {
 
   const diskBootXml = useUefi ? '\n      <boot order="2"/>' : '';
 
+  // The floppy is the one location every Windows Setup version is
+  // documented to check first, unconditionally, for autounattend.xml -
+  // unlike a second CD-ROM, which in practice (confirmed on real hardware
+  // here) is NOT reliably scanned by modern Setup at all. QEMU/libvirt can
+  // expose a plain host directory as a virtual FAT floppy directly (the
+  // "VVFAT" driver) - no mkisofs/mtools/mformat needed, just a directory
+  // containing autounattend.xml. It's read-only data with no boot sector,
+  // so it's never a boot candidate either way - harmless to leave attached
+  // even in BIOS mode's <boot dev="hd"/><boot dev="cdrom"/> cascade.
+  const floppyXml = answerFileDir
+    ? `    <disk type="dir" device="floppy">
+      <driver name="qemu" type="fat"/>
+      <source dir="${answerFileDir}"/>
+      <target dev="fda" bus="fdc"/>
+      <readonly/>
+    </disk>
+`
+    : '';
+
   return `<domain type="kvm">
   <name>${escapeXml(name)}</name>
   <uuid>${uuid}</uuid>
@@ -182,7 +204,7 @@ ${cputuneXml}  ${osXml}
       <target dev="vda" bus="virtio"/>${diskBootXml}
     </disk>
 ${cdroms.join('\n')}
-    <controller type="usb" index="0" model="qemu-xhci"/>
+${floppyXml}    <controller type="usb" index="0" model="qemu-xhci"/>
     <controller type="sata" index="0"/>
 ${useUefi ? '    <controller type="sata" index="1"/>\n' : ''}    <controller type="virtio-serial" index="0"/>
     <interface type="network">
