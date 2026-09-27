@@ -3,7 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const { run } = require('./exec');
 const { buildDomainXml } = require('./libvirtXml');
-const { buildSeedIso } = require('./unattend');
+const { buildSeedIso, buildAutounattendXml } = require('./unattend');
+const { injectFileIntoIso } = require('./isoTools');
 const { ensureVirtioIso, ensureWindowsIso } = require('./isoAcquire');
 const { openViewer } = require('./vmctl');
 const { VM_IMAGES_DIR, SEED_ISO_DIR, VM_META_DIR, findOvmf } = require('./paths');
@@ -98,6 +99,35 @@ async function createVm(opts, onProgress = () => {}) {
     },
     (line) => report('seed', 25, line)
   );
+
+  // Belt-and-suspenders: the seed CD above already carries autounattend.xml
+  // at its own root, which Setup's answer-file search is documented to
+  // pick up from a second attached CD-ROM. But the single most reliable
+  // place - the one Setup checks first, no scanning-order questions at all
+  // - is the root of the installation media itself. When xorriso is
+  // available we make a copy of the Windows ISO with autounattend.xml
+  // injected directly onto it (its original El Torito boot images, BIOS
+  // *and* UEFI, are preserved byte-for-byte via xorriso's "replay" mode, so
+  // this can't break booting) and boot from that copy instead. If xorriso
+  // isn't installed, or the injection fails for any reason, we just fall
+  // back to the plain seed-CD-only behavior from before - never a hard
+  // failure over this.
+  if (!interactiveInstall) {
+    try {
+      report('seed', 30, 'Embedding autounattend.xml directly onto the Windows ISO (most reliable detection)...');
+      const answerFileXml = buildAutounattendXml({
+        username: opts.username,
+        password: opts.password,
+        computerName: opts.name.toUpperCase().slice(0, 15),
+        osTargetHint: opts.osTargetHint
+      });
+      const injectedIsoPath = path.join(SEED_ISO_DIR, `${opts.name}-windows-autounattend.iso`);
+      await injectFileIntoIso(windowsIsoPath, injectedIsoPath, 'autounattend.xml', answerFileXml);
+      windowsIsoPath = injectedIsoPath;
+    } catch (e) {
+      report('seed', 30, `Skipping ISO embedding (${e.message}) - relying on the separate seed CD instead.`);
+    }
+  }
 
   report('xml', 35, 'Generating libvirt domain XML...');
   const xml = buildDomainXml({
