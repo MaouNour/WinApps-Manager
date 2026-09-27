@@ -63,25 +63,29 @@ function buildDomainXml(opts) {
   // Extra removable-media entries: Windows ISO, VirtIO driver ISO, and our
   // generated autounattend/oem seed ISO (used only during first boot).
   //
-  // Only the Windows ISO ever gets a <boot order=".."/>. With three cdroms
-  // attached, letting OVMF pick "the" cdrom from the old generic
-  // <os><boot dev="cdrom"/></os> list is ambiguous - depending on the OVMF
-  // build/version this can make the firmware fall back to its interactive
-  // "Boot Manager" screen (looks like the VM is frozen "waiting to select a
-  // boot device", especially headless with no one there to press a key).
-  // Giving exactly one specific device an explicit boot order removes that
-  // ambiguity entirely. Per libvirt's schema, per-device <boot order=".."/>
-  // and the old <os><boot dev=".."/></os> list are mutually exclusive, so
-  // callers must not also emit the <os>-level list (see below).
+  // The Windows ISO gets its own dedicated SATA controller (index 0, port
+  // 0/"sda"), separate from the other two ISOs (index 1). Two reasons:
+  //  - Only the Windows ISO gets a <boot order=".."/>; with several cdroms
+  //    sharing one AHCI controller, OVMF's boot-order matching has to tell
+  //    them apart purely by port number, and that's unreliable enough in
+  //    practice to make the whole boot order silently get ignored - the VM
+  //    then drops to "No bootable device found - Press any key..." even
+  //    though the device is perfectly bootable (proven by picking it
+  //    manually from that same menu working every time). Giving it a
+  //    controller of its own removes that ambiguity.
+  //  - It also puts the boot-critical device on the *first* port
+  //    ("sda"/unit 0) of its controller rather than the second, matching
+  //    how OVMF/QEMU's own examples and virt-manager lay things out,
+  //    instead of leaving port 0 empty and booting from port 1.
   const cdroms = [];
   if (windowsIsoPath) {
-    cdroms.push(cdromXml('sdb', windowsIsoPath, 1));
+    cdroms.push(cdromXml('sda', windowsIsoPath, { controller: 0, unit: 0, bootOrder: 1 }));
   }
   if (virtioIsoPath) {
-    cdroms.push(cdromXml('sdc', virtioIsoPath));
+    cdroms.push(cdromXml('sdb', virtioIsoPath, { controller: 1, unit: 0 }));
   }
   if (seedIsoPath) {
-    cdroms.push(cdromXml('sdd', seedIsoPath));
+    cdroms.push(cdromXml('sdc', seedIsoPath, { controller: 1, unit: 1 }));
   }
 
   return `<domain type="kvm">
@@ -148,6 +152,7 @@ ${cputuneXml}  <os>
 ${cdroms.join('\n')}
     <controller type="usb" index="0" model="qemu-xhci"/>
     <controller type="sata" index="0"/>
+    <controller type="sata" index="1"/>
     <controller type="virtio-serial" index="0"/>
     <interface type="network">
       <mac address="${mac}"/>
@@ -192,13 +197,14 @@ ${cdroms.join('\n')}
 `;
 }
 
-function cdromXml(dev, sourceFile, bootOrder = null) {
+function cdromXml(dev, sourceFile, { controller = 0, unit = 0, bootOrder = null } = {}) {
   return `    <disk type="file" device="cdrom">
       <driver name="qemu" type="raw"/>
       <source file="${sourceFile}"/>
       <target dev="${dev}" bus="sata"/>
       <readonly/>
       ${bootOrder ? `<boot order="${bootOrder}"/>` : ''}
+      <address type="drive" controller="${controller}" bus="0" target="0" unit="${unit}"/>
     </disk>`;
 }
 
