@@ -206,7 +206,22 @@ echo [winapps-manager] Running first-boot setup...
 for %%d in (D E F G H) do (
   if exist %%d:\\virtio-win-guest-tools.exe (
     echo [winapps-manager] Installing VirtIO guest tools + QEMU Guest Agent (silent)...
-    %%d:\\virtio-win-guest-tools.exe /install /quiet /norestart
+    %%d:\\virtio-win-guest-tools.exe /install /quiet /norestart ACCEPTEULA=1
+    REM Belt-and-suspenders: under fully silent/quiet mode this Burn bundle
+    REM has, in practice, sometimes skipped installing the QEMU Guest Agent
+    REM specifically even though the rest of the bundle (drivers, balloon,
+    REM spice agent) installs fine - so install the guest-agent MSI straight
+    REM off the same disc too, explicitly. Re-running msiexec against an MSI
+    REM that's already installed is a harmless no-op, not a second full install.
+    if exist %%d:\\guest-agent\\qemu-ga-x86_64.msi (
+      echo [winapps-manager] Ensuring QEMU Guest Agent is installed ^(guest-agent\\qemu-ga-x86_64.msi^)...
+      msiexec /i %%d:\\guest-agent\\qemu-ga-x86_64.msi /qn /norestart
+    ) else if exist %%d:\\guest-agent\\qemu-ga-x86.msi (
+      echo [winapps-manager] Ensuring QEMU Guest Agent is installed ^(guest-agent\\qemu-ga-x86.msi^)...
+      msiexec /i %%d:\\guest-agent\\qemu-ga-x86.msi /qn /norestart
+    )
+    REM In case it installed but the service didn't auto-start yet.
+    sc start QEMU-GA >nul 2>&1
   )
 )
 
