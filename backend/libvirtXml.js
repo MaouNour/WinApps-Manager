@@ -95,12 +95,8 @@ function buildDomainXml(opts) {
   <memory unit="KiB">${memoryKiB}</memory>
   <currentMemory unit="KiB">${currentMemoryKiB}</currentMemory>
   <vcpu placement="static">${vcpus}</vcpu>
-${cputuneXml}  <os firmware="efi">
+${cputuneXml}  <os>
     <type arch="x86_64" machine="pc-q35-8.1">hvm</type>
-    <firmware>
-      <feature enabled="${secureBoot ? 'yes' : 'no'}" name="enrolled-keys"/>
-      <feature enabled="${secureBoot ? 'yes' : 'no'}" name="secure-boot"/>
-    </firmware>
     <loader readonly="yes" secure="${secureBoot ? 'yes' : 'no'}" type="pflash" format="${ovmf.format}">${ovmf.code}</loader>
     <nvram template="${ovmf.vars}" format="${ovmf.format === 'qcow2' ? 'qcow2' : 'raw'}">${nvramPath}</nvram>
     <bootmenu enable="no"/>
