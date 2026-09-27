@@ -280,6 +280,7 @@ function vmRow(vm) {
   actions.appendChild(mkBtn('Shutdown', () => window.api.vm.shutdown(vm.name)));
   actions.appendChild(mkBtn('Kill', () => window.api.vm.kill(vm.name), 'danger'));
   actions.appendChild(mkBtn('Restart', () => window.api.vm.reset(vm.name)));
+  actions.appendChild(mkBtn('Open Console', () => window.api.vm.openViewer(vm.name)));
   actions.appendChild(
     mkBtn(netDisconnected ? 'Reconnect network' : 'Disconnect network', () =>
       netDisconnected ? window.api.net.reconnect('default') : window.api.net.disconnect('default')
@@ -411,6 +412,12 @@ async function refreshVmDetailsData(vmName, { stats = false, config = false, gue
       entry.guestError = e.message;
     }
     entry.guestAt = Date.now();
+    try {
+      entry.mediaList = await window.api.media.list(vmName);
+      entry.mediaError = null;
+    } catch (e) {
+      entry.mediaError = e.message;
+    }
   }
 }
 
@@ -683,6 +690,73 @@ function renderVmDetails(vm) {
     guestBox.appendChild(h('div', { class: 'sub' }, 'Loading...'));
   }
 
+  // --- Removable media (Windows ISO / VirtIO ISO / seed ISO / anything
+  // else attached, e.g. an Office ISO) - eject permanently once you're
+  // done installing, or swap a slot for a different ISO. Works whether the
+  // VM is running or shut off (reads/writes straight to the domain XML).
+  const mediaBox = h('div', {});
+  mediaBox.appendChild(h('h3', {}, 'Removable media (ISOs)'));
+  panel.appendChild(mediaBox);
+
+  async function pickAndAttach(target /* null = attach as a brand new drive */) {
+    const isoPath = await window.api.dialogs.pickIso({ title: 'Select ISO to attach' });
+    if (!isoPath) return;
+    try {
+      if (target) await window.api.media.attachToSlot(vm.name, target, isoPath);
+      else await window.api.media.attachNew(vm.name, isoPath);
+      toast(`Attached ${isoPath.split('/').pop()}.`);
+      await refreshVmDetailsData(vm.name, { full: true });
+      rerenderVmDetailsIfOpen(vm);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  if (entry.mediaList) {
+    const list = h('div', { class: 'check-list' });
+    for (const dev of entry.mediaList) {
+      const attached = !!dev.sourceFile;
+      list.appendChild(h('div', { class: 'check-item' }, [
+        h('div', {}, [
+          h('div', { class: 'label' }, `${dev.label} (${dev.target})`),
+          attached ? h('div', { class: 'sub' }, dev.sourceFile) : null
+        ]),
+        h('div', { class: 'row' }, [
+          h('span', { class: 'badge ' + (attached ? 'ok' : 'warn') }, attached ? 'attached' : 'empty'),
+          attached
+            ? h('button', {
+                class: 'btn small',
+                onclick: async (ev) => {
+                  ev.target.disabled = true;
+                  try {
+                    await window.api.media.eject(vm.name, dev.target);
+                    toast(`Ejected ${dev.label} - won\u2019t remount on reboot.`);
+                    await refreshVmDetailsData(vm.name, { full: true });
+                    rerenderVmDetailsIfOpen(vm);
+                  } catch (e) {
+                    toast(e.message, true);
+                  } finally {
+                    ev.target.disabled = false;
+                  }
+                }
+              }, 'Eject permanently')
+            : h('button', { class: 'btn small', onclick: () => pickAndAttach(dev.target) }, 'Attach ISO\u2026')
+        ])
+      ]));
+    }
+    mediaBox.appendChild(list);
+    mediaBox.appendChild(h('button', {
+      class: 'btn',
+      style: 'margin-top:10px',
+      onclick: () => pickAndAttach(null)
+    }, '+ Attach another ISO (new drive)\u2026'));
+    mediaBox.appendChild(h('div', { class: 'sub' }, 'Eject clears a drive permanently (live + on next boot) - reuse the freed slot for another ISO, e.g. Office, or leave it empty. Works with the VM running or shut off.'));
+  } else if (entry.mediaError) {
+    mediaBox.appendChild(h('div', { class: 'sub' }, 'Could not read attached media: ' + entry.mediaError));
+  } else {
+    mediaBox.appendChild(h('div', { class: 'sub' }, 'Loading...'));
+  }
+
   return panel;
 }
 
@@ -703,6 +777,9 @@ function renderWizard(root) {
     password: '',
     memballoon: true,
     startOnBoot: true,
+    firmware: 'uefi',
+    secureBoot: true,
+    interactiveInstall: false,
     enableDefenderDisable: false,
     enableUpdatesDisable: false,
     enableFirewallDisable: false,
@@ -773,7 +850,9 @@ function renderWizard(root) {
     ]),
     h('div', { class: 'card', id: 'wizard-progress-card' }, [
       h('h2', {}, 'Create'),
-      h('div', { class: 'sub' }, 'The VM boots with no window shown - just watch progress here. Windows ISO / VirtIO ISO download (if needed), silent install, and first-boot setup all happen automatically; it reaches 100% once Windows is installed and the guest agent responds.'),
+      h('div', { class: 'sub' }, state.interactiveInstall
+        ? 'A viewer window will open once the VM starts, for you to run Windows Setup yourself. Windows ISO / VirtIO ISO download (if needed) still happen automatically; the bar reaches 100% once you\'ve finished Setup, run bootstrap.cmd, and the guest agent responds.'
+        : 'The VM boots with no window shown - just watch progress here. Windows ISO / VirtIO ISO download (if needed), silent install, and first-boot setup all happen automatically; it reaches 100% once Windows is installed and the guest agent responds.'),
       h('div', { id: 'progress-area' }),
       h('button', {
         class: 'btn primary',
@@ -790,6 +869,24 @@ function renderMediaCard(state) {
     h('h2', {}, 'Install media'),
     h('div', { class: 'sub' }, "By default nothing to pick: the Windows ISO is fetched straight from Microsoft's own download servers for the edition you chose above, and the VirtIO drivers ISO from the official Fedora mirror - both cached after the first VM, so later VMs don't re-download. Expand Advanced only if you already have specific ISO files you want to use instead.")
   ]);
+
+  card.appendChild(checkbox('Install Windows manually via the GUI (opens a viewer window; you click through Windows Setup yourself instead of a silent unattended install)', state, 'interactiveInstall'));
+  card.appendChild(h('div', { class: 'sub' }, 'The libvirt XML is still built and optimized the same "winapps way" either way (VirtIO, TPM, Hyper-V enlightenments, etc.) - this only changes whether Setup answers itself or asks you. Once you reach the Windows desktop, open the "SEED" CD drive and run bootstrap.cmd as Administrator to finish the WinApps side (guest tools, guest agent, RDP registry keys, your chosen tweaks below).'));
+
+  const secureBootRow = h('div', {}, [
+    checkbox('Secure Boot', state, 'secureBoot'),
+    h('div', { class: 'sub' }, 'Leave this on for official Microsoft ISOs. Turn it off for modified/community builds (Tiny10, ReviOS, AME, etc.) - their bootloaders usually are not Microsoft-signed, and Secure Boot rejecting an unsigned bootloader with nothing else to fall back to is a common reason a VM looks "stuck" at a firmware boot-device screen.')
+  ]);
+
+  card.appendChild(field('Firmware', selectInput(state, 'firmware', [
+    ['uefi', 'UEFI (OVMF) - required for Windows 11 Secure Boot/TPM'],
+    ['bios', 'Legacy BIOS - simpler, more reliable boot; fine for Windows 10 and modified ISOs']
+  ], (val) => {
+    secureBootRow.style.display = val === 'bios' ? 'none' : '';
+  })));
+  secureBootRow.style.display = state.firmware === 'bios' ? 'none' : '';
+  card.appendChild(secureBootRow);
+  card.appendChild(h('div', { class: 'sub' }, 'Legacy BIOS skips OVMF/TPM/Secure Boot entirely and uses the classic "try the disk, fall through to the CD-ROM if empty" boot cascade - the same thing a stock virt-manager VM does. It can\'t run Windows 11\'s Secure Boot/TPM-gated install, but for Windows 10 or a modified ISO like Tiny10 it sidesteps OVMF\'s UEFI boot manager altogether and is the more reliable choice if you\'ve hit a "no bootable device" screen.'));
 
   const advancedBody = h('div', { style: 'display:none; margin-top:12px' });
   const advBtn = h('button', {

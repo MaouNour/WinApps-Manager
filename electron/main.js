@@ -18,6 +18,7 @@ const winappsApps = require('../backend/winappsApps');
 const hostStats = require('../backend/hostStats');
 const appsCatalog = require('../backend/appsCatalog');
 const appsManage = require('../backend/appsManage');
+const media = require('../backend/media');
 
 // Without a real GPU driver behind the display (common when the host is
 // itself virtualized, or on some Wayland/Xorg + software-rendering setups),
@@ -123,6 +124,7 @@ ipcMain.handle('vm:start', (_e, name) => vmctl.startVm(name));
 ipcMain.handle('vm:shutdown', (_e, name) => vmctl.shutdownVm(name));
 ipcMain.handle('vm:kill', (_e, name) => vmctl.killVm(name));
 ipcMain.handle('vm:reset', (_e, name) => vmctl.resetVm(name));
+ipcMain.handle('vm:openViewer', (_e, name) => vmctl.openViewer(name));
 ipcMain.handle('vm:delete', (_e, name, opts) => vmctl.deleteVm(name, opts));
 
 // ---------- IPC: per-VM network toggle ----------
@@ -173,6 +175,13 @@ ipcMain.handle('guest:statusOne', (_e, name, feature) => guestControl.getSingleF
 ipcMain.handle('guest:toggle', (_e, name, feature, enabled) => guestControl.applyToggle(name, feature, enabled));
 ipcMain.handle('guest:applyRecommended', (_e, name) => guestControl.applyRecommended(name));
 ipcMain.handle('guest:applyRemoteAppOnlyPreset', (_e, name) => guestControl.applyRemoteAppOnlyPreset(name));
+
+// ---------- IPC: removable media (ISOs) ----------
+ipcMain.handle('media:list', (_e, name) => media.listMedia(name));
+ipcMain.handle('media:eject', (_e, name, target) => media.ejectMedia(name, target));
+ipcMain.handle('media:attachToSlot', (_e, name, target, isoPath) => media.attachToSlot(name, target, isoPath));
+ipcMain.handle('media:attachNew', (_e, name, isoPath) => media.attachNewCdrom(name, isoPath));
+ipcMain.handle('media:detach', (_e, name, target) => media.detachDrive(name, target));
 
 // ---------- IPC: winboat-style app picker backed by WinApps' own detection ----------
 ipcMain.handle('winappsApps:runDetection', async (event, scope) => {

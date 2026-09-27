@@ -11,9 +11,13 @@ function randomMac() {
  * opts:
  *  name, memoryMiB, currentMemoryMiB, vcpus, diskPath, diskSizeGiB (unused here,
  *  disk itself is created separately), windowsIsoPath, virtioIsoPath, seedIsoPath,
- *  ovmf {code, vars, format}, nvramPath, network ('default'), memballoon (bool),
+ *  ovmf {code, vars, format} (ignored when firmware='bios'), nvramPath,
+ *  network ('default'), memballoon (bool),
  *  cpuPinning: [{vcpu, cpuset}] | null, topology: {sockets,dies,clusters,cores,threads} | null,
- *  osVariant label metadata (win10/win11), mac (optional)
+ *  osVariant label metadata (win10/win11), mac (optional), secureBoot (bool, default true,
+ *  ignored when firmware='bios'), firmware ('uefi' | 'bios', default 'uefi'),
+ *  answerFileImagePath (optional - path to a small pre-built FAT12 floppy
+ *  *image file* containing just autounattend.xml; see below)
  */
 function buildDomainXml(opts) {
   const {
@@ -33,8 +37,13 @@ function buildDomainXml(opts) {
     topology = null,
     osId = 'http://microsoft.com/win/11',
     mac = randomMac(),
-    uuid = crypto.randomUUID()
+    uuid = crypto.randomUUID(),
+    secureBoot = true,
+    firmware = 'uefi',
+    answerFileImagePath = null
   } = opts;
+
+  const useUefi = firmware !== 'bios';
 
   const memoryKiB = memoryMiB * 1024;
   const currentMemoryKiB = (currentMemoryMiB || memoryMiB) * 1024;
@@ -61,16 +70,94 @@ function buildDomainXml(opts) {
 
   // Extra removable-media entries: Windows ISO, VirtIO driver ISO, and our
   // generated autounattend/oem seed ISO (used only during first boot).
+  //
+  // UEFI (OVMF): the Windows ISO gets its own dedicated SATA controller
+  // (index 0, port 0/"sda") plus an explicit <boot order="1"/>, separate
+  // from the other two ISOs (index 1). With several cdroms sharing one
+  // AHCI controller, OVMF's boot-order matching has to tell them apart
+  // purely by port number, and that's unreliable enough in practice to
+  // make the whole boot order silently get ignored - the VM then drops to
+  // "No bootable device found - Press any key..." even though the device
+  // is perfectly bootable (proven by picking it manually from that same
+  // menu working every time). Giving it a controller of its own removes
+  // that ambiguity, and putting it on the *first* port matches how
+  // OVMF/QEMU's own examples and virt-manager lay things out.
+  //
+  // Legacy BIOS (SeaBIOS): none of the above is needed - SeaBIOS's
+  // <os><boot dev="hd"/><boot dev="cdrom"/></os> list (the classic
+  // int18h-style cascade: try the disk, and if it has nothing installed,
+  // fall through to the first CD-ROM) is exactly what a stock virt-manager
+  // VM uses and is far more forgiving here. Per libvirt's schema, per-device
+  // <boot order=".."/> and the <os>-level <boot dev=".."/> list are
+  // mutually exclusive, so BIOS mode must not set boot order on any device
+  // and instead relies purely on that <os>-level list. One shared SATA
+  // controller for everything is enough.
   const cdroms = [];
-  if (windowsIsoPath) {
-    cdroms.push(cdromXml('sdb', windowsIsoPath));
+  if (useUefi) {
+    if (windowsIsoPath) cdroms.push(cdromXml('sda', windowsIsoPath, { controller: 0, unit: 0, bootOrder: 1 }));
+    if (virtioIsoPath) cdroms.push(cdromXml('sdb', virtioIsoPath, { controller: 1, unit: 0 }));
+    if (seedIsoPath) cdroms.push(cdromXml('sdc', seedIsoPath, { controller: 1, unit: 1 }));
+  } else {
+    if (windowsIsoPath) cdroms.push(cdromXml('sda', windowsIsoPath, { controller: 0, unit: 0 }));
+    if (virtioIsoPath) cdroms.push(cdromXml('sdb', virtioIsoPath, { controller: 0, unit: 1 }));
+    if (seedIsoPath) cdroms.push(cdromXml('sdc', seedIsoPath, { controller: 0, unit: 2 }));
   }
-  if (virtioIsoPath) {
-    cdroms.push(cdromXml('sdc', virtioIsoPath));
-  }
-  if (seedIsoPath) {
-    cdroms.push(cdromXml('sdd', seedIsoPath));
-  }
+
+  const osXml = useUefi
+    ? `<os>
+    <type arch="x86_64" machine="pc-q35-8.1">hvm</type>
+    <loader readonly="yes" secure="${secureBoot ? 'yes' : 'no'}" type="pflash" format="${ovmf.format}">${ovmf.code}</loader>
+    <nvram template="${ovmf.vars}" format="${ovmf.format === 'qcow2' ? 'qcow2' : 'raw'}">${nvramPath}</nvram>
+    <bootmenu enable="no"/>
+  </os>`
+    : `<os>
+    <type arch="x86_64" machine="pc-q35-8.1">hvm</type>
+    <boot dev="hd"/>
+    <boot dev="cdrom"/>
+    <bootmenu enable="no"/>
+  </os>`;
+
+  // TPM + SMM protection are OVMF/UEFI concerns (Windows 11's Secure Boot/
+  // TPM 2.0 requirement); meaningless - and in TPM's case, not reliably
+  // supported - under legacy SeaBIOS, so both are left out entirely in
+  // BIOS mode rather than emitted as dead/incompatible config.
+  const tpmXml = useUefi
+    ? `<tpm model="tpm-crb">
+      <backend type="emulator" version="2.0"/>
+    </tpm>`
+    : '';
+  const smmXml = useUefi ? '\n    <smm state="on"/>' : '';
+
+  const diskBootXml = useUefi ? '\n      <boot order="2"/>' : '';
+
+  // The floppy is the one location every Windows Setup version is
+  // documented to check first, unconditionally, for autounattend.xml -
+  // unlike a second CD-ROM, which in practice (confirmed on real hardware
+  // here) is NOT reliably scanned by modern Setup at all.
+  //
+  // NOTE: this used to expose a plain host *directory* as a virtual FAT
+  // floppy via QEMU's "VVFAT" driver (`type="dir"`, `<source dir=...>`).
+  // That's simpler to generate, but on distros that confine qemu with
+  // AppArmor (Ubuntu/Debian's default libvirt setup), `virt-aa-helper`
+  // does not reliably add a read rule for directory-backed disk sources
+  // the way it does for ordinary files - qemu's own dynamically generated
+  // per-VM profile ends up missing the path entirely, so the vvfat driver
+  // fails with "Could not read directory ..." even though the directory
+  // exists and its plain Unix permissions are fine. A real image *file*
+  // (built once with mtools in unattend.js) gets the same automatic
+  // AppArmor rule the qcow2 disk and the ISOs already get, so it doesn't
+  // hit this. It's read-only data with no boot sector, so it's never a
+  // boot candidate either way - harmless to leave attached even in BIOS
+  // mode's <boot dev="hd"/><boot dev="cdrom"/> cascade.
+  const floppyXml = answerFileImagePath
+    ? `    <disk type="file" device="floppy">
+      <driver name="qemu" type="raw"/>
+      <source file="${answerFileImagePath}"/>
+      <target dev="fda" bus="fdc"/>
+      <readonly/>
+    </disk>
+`
+    : '';
 
   return `<domain type="kvm">
   <name>${escapeXml(name)}</name>
@@ -83,17 +170,7 @@ function buildDomainXml(opts) {
   <memory unit="KiB">${memoryKiB}</memory>
   <currentMemory unit="KiB">${currentMemoryKiB}</currentMemory>
   <vcpu placement="static">${vcpus}</vcpu>
-${cputuneXml}  <os firmware="efi">
-    <type arch="x86_64" machine="pc-q35-8.1">hvm</type>
-    <firmware>
-      <feature enabled="yes" name="enrolled-keys"/>
-      <feature enabled="yes" name="secure-boot"/>
-    </firmware>
-    <loader readonly="yes" secure="yes" type="pflash" format="${ovmf.format}">${ovmf.code}</loader>
-    <nvram template="${ovmf.vars}" format="${ovmf.format === 'qcow2' ? 'qcow2' : 'raw'}">${nvramPath}</nvram>
-    <boot dev="hd"/>
-    <boot dev="cdrom"/>
-  </os>
+${cputuneXml}  ${osXml}
   <features>
     <acpi/>
     <apic/>
@@ -112,8 +189,7 @@ ${cputuneXml}  <os firmware="efi">
       <tlbflush state="on"/>
       <ipi state="on"/>
     </hyperv>
-    <vmport state="off"/>
-    <smm state="on"/>
+    <vmport state="off"/>${smmXml}
   </features>
   ${cpuTopologyXml}
   <clock offset="localtime">
@@ -135,12 +211,12 @@ ${cputuneXml}  <os firmware="efi">
     <disk type="file" device="disk">
       <driver name="qemu" type="qcow2" discard="unmap"/>
       <source file="${diskPath}"/>
-      <target dev="vda" bus="virtio"/>
+      <target dev="vda" bus="virtio"/>${diskBootXml}
     </disk>
 ${cdroms.join('\n')}
-    <controller type="usb" index="0" model="qemu-xhci"/>
+${floppyXml}    <controller type="usb" index="0" model="qemu-xhci"/>
     <controller type="sata" index="0"/>
-    <controller type="virtio-serial" index="0"/>
+${useUefi ? '    <controller type="sata" index="1"/>\n' : ''}    <controller type="virtio-serial" index="0"/>
     <interface type="network">
       <mac address="${mac}"/>
       <source network="${network}"/>
@@ -164,9 +240,7 @@ ${cdroms.join('\n')}
     <input type="tablet" bus="usb"/>
     <input type="mouse" bus="ps2"/>
     <input type="keyboard" bus="ps2"/>
-    <tpm model="tpm-crb">
-      <backend type="emulator" version="2.0"/>
-    </tpm>
+    ${tpmXml}
     <graphics type="spice" autoport="yes">
       <listen type="address"/>
       <image compression="off"/>
@@ -184,12 +258,14 @@ ${cdroms.join('\n')}
 `;
 }
 
-function cdromXml(dev, sourceFile) {
+function cdromXml(dev, sourceFile, { controller = 0, unit = 0, bootOrder = null } = {}) {
   return `    <disk type="file" device="cdrom">
       <driver name="qemu" type="raw"/>
       <source file="${sourceFile}"/>
       <target dev="${dev}" bus="sata"/>
       <readonly/>
+      ${bootOrder ? `<boot order="${bootOrder}"/>` : ''}
+      <address type="drive" controller="${controller}" bus="0" target="0" unit="${unit}"/>
     </disk>`;
 }
 

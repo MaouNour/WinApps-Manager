@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const { buildIso } = require('./isoTools');
+const { run } = require('./exec');
 const { DOWNLOADS_DIR, SEED_ISO_DIR } = require('./paths');
 const {
   psDisableDefender,
@@ -122,6 +123,12 @@ ${driverPaths.join('\n')}
       </UserData>
       <ImageInstall>
         <OSImage>
+          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/INDEX</Key>
+              <Value>1</Value>
+            </MetaData>
+          </InstallFrom>
           <InstallTo>
             <DiskID>0</DiskID>
             <PartitionID>1</PartitionID>
@@ -198,8 +205,38 @@ echo [winapps-manager] Running first-boot setup...
 :: Locate the VirtIO driver ISO (guest tools installer) among optical drives.
 for %%d in (D E F G H) do (
   if exist %%d:\\virtio-win-guest-tools.exe (
+    REM pnputil-based driver staging comes FIRST and is the primary path
+    REM for getting the drivers actually installed. The guest-tools Burn
+    REM bundle below is known - repeatedly, in the wild, not just here -
+    REM to be unreliable about which drivers its /quiet mode actually
+    REM installs; NetKVM (the network adapter) is the one that most
+    REM commonly gets silently skipped even though the disk/serial/balloon
+    REM drivers install fine, and even though a full interactive
+    REM click-through of the same installer includes it. pnputil sidesteps
+    REM that bundle/MSI feature-selection logic entirely: it stages every
+    REM signed .inf found anywhere under the drive (NetKVM, viostor,
+    REM vioscsi, Balloon, vioserial, qxl, ...) and /install binds each one
+    REM immediately to whatever matching hardware is present, with no GUI
+    REM and no dependence on the bundle's own default feature set.
+    echo [winapps-manager] Staging all VirtIO driver INFs via pnputil (NetKVM, storage, balloon, serial, ...)...
+    pnputil /add-driver %%d:\\*.inf /subdirs /install
     echo [winapps-manager] Installing VirtIO guest tools + QEMU Guest Agent (silent)...
-    %%d:\\virtio-win-guest-tools.exe /install /quiet /norestart
+    %%d:\\virtio-win-guest-tools.exe /install /quiet /norestart ACCEPTEULA=1
+    REM Belt-and-suspenders: under fully silent/quiet mode this Burn bundle
+    REM has, in practice, sometimes skipped installing the QEMU Guest Agent
+    REM specifically even though the rest of the bundle (drivers, balloon,
+    REM spice agent) installs fine - so install the guest-agent MSI straight
+    REM off the same disc too, explicitly. Re-running msiexec against an MSI
+    REM that's already installed is a harmless no-op, not a second full install.
+    if exist %%d:\\guest-agent\\qemu-ga-x86_64.msi (
+      echo [winapps-manager] Ensuring QEMU Guest Agent is installed ^(guest-agent\\qemu-ga-x86_64.msi^)...
+      msiexec /i %%d:\\guest-agent\\qemu-ga-x86_64.msi /qn /norestart
+    ) else if exist %%d:\\guest-agent\\qemu-ga-x86.msi (
+      echo [winapps-manager] Ensuring QEMU Guest Agent is installed ^(guest-agent\\qemu-ga-x86.msi^)...
+      msiexec /i %%d:\\guest-agent\\qemu-ga-x86.msi /qn /norestart
+    )
+    REM In case it installed but the service didn't auto-start yet.
+    sc start QEMU-GA >nul 2>&1
   )
 )
 
@@ -222,6 +259,21 @@ if exist "%~dp0NetProfileCleanup.ps1" (
 ${optional.join('\n')}
 
 echo [winapps-manager] First-boot setup complete.
+
+REM One reboot, always. The VirtIO guest-tools installer above (drivers +
+REM QEMU Guest Agent) reliably gets installed by /install /quiet /norestart,
+REM but in practice the virtio-serial driver doesn't finish *binding* to its
+REM device - and so the just-installed QEMU Guest Agent service has nothing
+REM to actually talk to the host over - until Windows re-enumerates it,
+REM which a plain driver install without a restart doesn't reliably trigger.
+REM A reboot forces that binding immediately and deterministically, instead
+REM of leaving the host-side poll to catch it only if/when Windows gets
+REM around to it on its own. AutoLogon's LogonCount is 3 (not 1) specifically
+REM so this reboot logs back in on its own with no user interaction needed;
+REM FirstLogonCommands themselves only ever run once, so this fires exactly
+REM one time.
+echo [winapps-manager] Rebooting once to finish binding VirtIO drivers / QEMU Guest Agent...
+shutdown /r /t 5 /f /c "winapps-manager: rebooting to finish VirtIO/QEMU Guest Agent setup"
 `;
 }
 
@@ -235,7 +287,16 @@ async function buildSeedIso(vmOpts, onLine) {
   fs.rmSync(stage, { recursive: true, force: true });
   fs.mkdirSync(stage, { recursive: true });
 
-  fs.writeFileSync(path.join(stage, 'autounattend.xml'), buildAutounattendXml(vmOpts));
+  // Manual/"GUI" installs (vmOpts.skipAutounattend) intentionally omit
+  // autounattend.xml so Windows Setup boots straight into its normal
+  // interactive wizard (language/edition/license key/partitioning/account,
+  // all asked on-screen) instead of answering itself. bootstrap.cmd + the
+  // OEM files still go on the disc so the user can finish the WinApps side
+  // (VirtIO guest tools/guest agent, RDPApps.reg, the optional tweaks) by
+  // running it themselves once Windows is up, from the "SEED" CD drive.
+  if (!vmOpts.skipAutounattend) {
+    fs.writeFileSync(path.join(stage, 'autounattend.xml'), buildAutounattendXml(vmOpts));
+  }
   fs.writeFileSync(path.join(stage, 'bootstrap.cmd'), buildBootstrapCmd(vmOpts));
   fs.writeFileSync(path.join(stage, 'disable-defender.ps1'), psDisableDefender());
   fs.writeFileSync(path.join(stage, 'disable-updates.ps1'), psDisableUpdates());
@@ -252,4 +313,41 @@ async function buildSeedIso(vmOpts, onLine) {
   return isoPath;
 }
 
-module.exports = { buildSeedIso, buildAutounattendXml };
+/**
+ * Builds a small FAT12 floppy *image file* containing just autounattend.xml
+ * at its root, and returns its path (`${SEED_ISO_DIR}/${name}-floppy.img`).
+ *
+ * This intentionally avoids QEMU's directory-backed "VVFAT" driver
+ * (`<disk type="dir"><source dir="...">`). That approach needs no extra
+ * tooling (just a plain directory), but on AppArmor-confined libvirt setups
+ * (the Ubuntu/Debian default) `virt-aa-helper` does not reliably grant the
+ * dynamically-generated per-VM profile read access to directory-backed disk
+ * sources, so QEMU fails at VM start with:
+ *   "Could not read directory /path/to/<name>-floppy: ..."
+ * even though the directory exists and its plain Unix permissions are
+ * completely fine (nothing to `chmod`/`chown` your way out of - it's the
+ * generated apparmor profile that's incomplete, not the filesystem).
+ *
+ * A real image file sidesteps that class of problem entirely: it's a
+ * `<source file="...">` disk exactly like the qcow2 disk and the ISOs
+ * already are, so it gets the same automatic AppArmor rule they do.
+ *
+ * Needs `mtools` (mformat/mcopy) - neither loop-mounts nor requires root.
+ */
+async function buildAutounattendFloppyImage(name, xmlContent) {
+  const imgPath = path.join(SEED_ISO_DIR, `${name}-floppy.img`);
+  fs.rmSync(imgPath, { force: true });
+
+  const xmlPath = path.join(SEED_ISO_DIR, `${name}-autounattend-staged.xml`);
+  fs.writeFileSync(xmlPath, xmlContent);
+
+  // 1.44MB, the classic floppy size mtools' `-f 1440` format expects.
+  fs.writeFileSync(imgPath, Buffer.alloc(1474560));
+  await run('mformat', ['-i', imgPath, '-f', '1440', '::']);
+  await run('mcopy', ['-i', imgPath, xmlPath, '::autounattend.xml']);
+
+  fs.rmSync(xmlPath, { force: true });
+  return imgPath;
+}
+
+module.exports = { buildSeedIso, buildAutounattendXml, buildAutounattendFloppyImage };

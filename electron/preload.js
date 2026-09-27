@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('api', {
     shutdown: (name) => ipcRenderer.invoke('vm:shutdown', name),
     kill: (name) => ipcRenderer.invoke('vm:kill', name),
     reset: (name) => ipcRenderer.invoke('vm:reset', name),
+    openViewer: (name) => ipcRenderer.invoke('vm:openViewer', name),
     delete: (name, opts) => ipcRenderer.invoke('vm:delete', name, opts)
   },
   net: {
@@ -64,6 +65,13 @@ contextBridge.exposeInMainWorld('api', {
     toggle: (name, feature, enabled) => ipcRenderer.invoke('guest:toggle', name, feature, enabled),
     applyRecommended: (name) => ipcRenderer.invoke('guest:applyRecommended', name),
     applyRemoteAppOnlyPreset: (name) => ipcRenderer.invoke('guest:applyRemoteAppOnlyPreset', name)
+  },
+  media: {
+    list: (name) => ipcRenderer.invoke('media:list', name),
+    eject: (name, target) => ipcRenderer.invoke('media:eject', name, target),
+    attachToSlot: (name, target, isoPath) => ipcRenderer.invoke('media:attachToSlot', name, target, isoPath),
+    attachNew: (name, isoPath) => ipcRenderer.invoke('media:attachNew', name, isoPath),
+    detach: (name, target) => ipcRenderer.invoke('media:detach', name, target)
   },
   winappsApps: {
     runDetection: (scope) => ipcRenderer.invoke('winappsApps:runDetection', scope),

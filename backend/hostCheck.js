@@ -63,6 +63,18 @@ async function runChecks() {
     detail: isoBin || 'Needed to build the unattended-install seed ISO.'
   });
 
+  // mtools (mformat/mcopy) builds the autounattend.xml floppy *image file*
+  // that gets attached as fda - see unattend.js buildAutounattendFloppyImage
+  // for why this replaced the old directory-backed VVFAT floppy.
+  const mformatBin = await which('mformat');
+  const mcopyBin = await which('mcopy');
+  results.push({
+    id: 'mtools',
+    label: "'mtools' available (mformat/mcopy)",
+    ok: !!mformatBin && !!mcopyBin,
+    detail: mformatBin && mcopyBin ? mformatBin : 'Not found on PATH. Needed to build the autounattend.xml floppy image (apt/dnf/pacman package: mtools).'
+  });
+
   // 3. libvirt default URI - checked via env / /etc/environment, per NOTE in docs
   const envUri = process.env.LIBVIRT_DEFAULT_URI;
   let etcEnvHasUri = false;
