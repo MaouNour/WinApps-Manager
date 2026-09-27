@@ -3,10 +3,10 @@ const fs = require('fs');
 const path = require('path');
 const { run } = require('./exec');
 const { buildDomainXml } = require('./libvirtXml');
-const { buildSeedIso, buildAutounattendXml } = require('./unattend');
+const { buildSeedIso, buildAutounattendXml, buildAutounattendFloppyImage } = require('./unattend');
 const { ensureVirtioIso, ensureWindowsIso } = require('./isoAcquire');
 const { openViewer } = require('./vmctl');
-const { VM_IMAGES_DIR, SEED_ISO_DIR, VM_META_DIR, findOvmf } = require('./paths');
+const { VM_IMAGES_DIR, VM_META_DIR, findOvmf } = require('./paths');
 
 /**
  * opts: {
@@ -99,20 +99,16 @@ async function createVm(opts, onProgress = () => {}) {
     (line) => report('seed', 25, line)
   );
 
-  // autounattend.xml ALSO goes on a dedicated virtual floppy (a plain host
-  // directory exposed to the guest as a FAT floppy - see libvirtXml.js) in
-  // addition to the seed CD above. The floppy is the one location every
-  // version of Windows Setup is documented to check first, no exceptions;
-  // a second CD-ROM's answer file, by contrast, was confirmed NOT to get
-  // picked up in testing. Keeping it on both costs nothing - whichever one
-  // Setup finds first wins.
-  let answerFileDir = null;
+  // autounattend.xml ALSO goes on a dedicated virtual floppy (a small FAT12
+  // image file - see libvirtXml.js) in addition to the seed CD above. The
+  // floppy is the one location every version of Windows Setup is documented
+  // to check first, no exceptions; a second CD-ROM's answer file, by
+  // contrast, was confirmed NOT to get picked up in testing. Keeping it on
+  // both costs nothing - whichever one Setup finds first wins.
+  let answerFileImagePath = null;
   if (!interactiveInstall) {
-    answerFileDir = path.join(SEED_ISO_DIR, `${opts.name}-floppy`);
-    fs.rmSync(answerFileDir, { recursive: true, force: true });
-    fs.mkdirSync(answerFileDir, { recursive: true });
-    fs.writeFileSync(
-      path.join(answerFileDir, 'autounattend.xml'),
+    answerFileImagePath = await buildAutounattendFloppyImage(
+      opts.name,
       buildAutounattendXml({
         username: opts.username,
         password: opts.password,
@@ -134,7 +130,7 @@ async function createVm(opts, onProgress = () => {}) {
     seedIsoPath,
     ovmf,
     nvramPath,
-    answerFileDir,
+    answerFileImagePath,
     memballoon: opts.memballoon !== false,
     osId: guessLibosinfoId(opts.osTargetHint),
     cpuPinning: opts.cpuPinning || null,

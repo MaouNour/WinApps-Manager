@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const { buildIso } = require('./isoTools');
+const { run } = require('./exec');
 const { DOWNLOADS_DIR, SEED_ISO_DIR } = require('./paths');
 const {
   psDisableDefender,
@@ -267,4 +268,41 @@ async function buildSeedIso(vmOpts, onLine) {
   return isoPath;
 }
 
-module.exports = { buildSeedIso, buildAutounattendXml };
+/**
+ * Builds a small FAT12 floppy *image file* containing just autounattend.xml
+ * at its root, and returns its path (`${SEED_ISO_DIR}/${name}-floppy.img`).
+ *
+ * This intentionally avoids QEMU's directory-backed "VVFAT" driver
+ * (`<disk type="dir"><source dir="...">`). That approach needs no extra
+ * tooling (just a plain directory), but on AppArmor-confined libvirt setups
+ * (the Ubuntu/Debian default) `virt-aa-helper` does not reliably grant the
+ * dynamically-generated per-VM profile read access to directory-backed disk
+ * sources, so QEMU fails at VM start with:
+ *   "Could not read directory /path/to/<name>-floppy: ..."
+ * even though the directory exists and its plain Unix permissions are
+ * completely fine (nothing to `chmod`/`chown` your way out of - it's the
+ * generated apparmor profile that's incomplete, not the filesystem).
+ *
+ * A real image file sidesteps that class of problem entirely: it's a
+ * `<source file="...">` disk exactly like the qcow2 disk and the ISOs
+ * already are, so it gets the same automatic AppArmor rule they do.
+ *
+ * Needs `mtools` (mformat/mcopy) - neither loop-mounts nor requires root.
+ */
+async function buildAutounattendFloppyImage(name, xmlContent) {
+  const imgPath = path.join(SEED_ISO_DIR, `${name}-floppy.img`);
+  fs.rmSync(imgPath, { force: true });
+
+  const xmlPath = path.join(SEED_ISO_DIR, `${name}-autounattend-staged.xml`);
+  fs.writeFileSync(xmlPath, xmlContent);
+
+  // 1.44MB, the classic floppy size mtools' `-f 1440` format expects.
+  fs.writeFileSync(imgPath, Buffer.alloc(1474560));
+  await run('mformat', ['-i', imgPath, '-f', '1440', '::']);
+  await run('mcopy', ['-i', imgPath, xmlPath, '::autounattend.xml']);
+
+  fs.rmSync(xmlPath, { force: true });
+  return imgPath;
+}
+
+module.exports = { buildSeedIso, buildAutounattendXml, buildAutounattendFloppyImage };

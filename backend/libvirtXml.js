@@ -16,8 +16,8 @@ function randomMac() {
  *  cpuPinning: [{vcpu, cpuset}] | null, topology: {sockets,dies,clusters,cores,threads} | null,
  *  osVariant label metadata (win10/win11), mac (optional), secureBoot (bool, default true,
  *  ignored when firmware='bios'), firmware ('uefi' | 'bios', default 'uefi'),
- *  answerFileDir (optional - a host directory containing just autounattend.xml,
- *  exposed to the guest as a virtual floppy disk; see below)
+ *  answerFileImagePath (optional - path to a small pre-built FAT12 floppy
+ *  *image file* containing just autounattend.xml; see below)
  */
 function buildDomainXml(opts) {
   const {
@@ -40,7 +40,7 @@ function buildDomainXml(opts) {
     uuid = crypto.randomUUID(),
     secureBoot = true,
     firmware = 'uefi',
-    answerFileDir = null
+    answerFileImagePath = null
   } = opts;
 
   const useUefi = firmware !== 'bios';
@@ -133,16 +133,26 @@ function buildDomainXml(opts) {
   // The floppy is the one location every Windows Setup version is
   // documented to check first, unconditionally, for autounattend.xml -
   // unlike a second CD-ROM, which in practice (confirmed on real hardware
-  // here) is NOT reliably scanned by modern Setup at all. QEMU/libvirt can
-  // expose a plain host directory as a virtual FAT floppy directly (the
-  // "VVFAT" driver) - no mkisofs/mtools/mformat needed, just a directory
-  // containing autounattend.xml. It's read-only data with no boot sector,
-  // so it's never a boot candidate either way - harmless to leave attached
-  // even in BIOS mode's <boot dev="hd"/><boot dev="cdrom"/> cascade.
-  const floppyXml = answerFileDir
-    ? `    <disk type="dir" device="floppy">
-      <driver name="qemu" type="fat"/>
-      <source dir="${answerFileDir}"/>
+  // here) is NOT reliably scanned by modern Setup at all.
+  //
+  // NOTE: this used to expose a plain host *directory* as a virtual FAT
+  // floppy via QEMU's "VVFAT" driver (`type="dir"`, `<source dir=...>`).
+  // That's simpler to generate, but on distros that confine qemu with
+  // AppArmor (Ubuntu/Debian's default libvirt setup), `virt-aa-helper`
+  // does not reliably add a read rule for directory-backed disk sources
+  // the way it does for ordinary files - qemu's own dynamically generated
+  // per-VM profile ends up missing the path entirely, so the vvfat driver
+  // fails with "Could not read directory ..." even though the directory
+  // exists and its plain Unix permissions are fine. A real image *file*
+  // (built once with mtools in unattend.js) gets the same automatic
+  // AppArmor rule the qcow2 disk and the ISOs already get, so it doesn't
+  // hit this. It's read-only data with no boot sector, so it's never a
+  // boot candidate either way - harmless to leave attached even in BIOS
+  // mode's <boot dev="hd"/><boot dev="cdrom"/> cascade.
+  const floppyXml = answerFileImagePath
+    ? `    <disk type="file" device="floppy">
+      <driver name="qemu" type="raw"/>
+      <source file="${answerFileImagePath}"/>
       <target dev="fda" bus="fdc"/>
       <readonly/>
     </disk>
