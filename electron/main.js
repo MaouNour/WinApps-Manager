@@ -18,6 +18,7 @@ const winappsApps = require('../backend/winappsApps');
 const hostStats = require('../backend/hostStats');
 const appsCatalog = require('../backend/appsCatalog');
 const appsManage = require('../backend/appsManage');
+const media = require('../backend/media');
 
 // Without a real GPU driver behind the display (common when the host is
 // itself virtualized, or on some Wayland/Xorg + software-rendering setups),
@@ -172,6 +173,13 @@ ipcMain.handle('vm:applyLibvirtOptimizations', (_e, name) => vmctl.applyLibvirtO
 ipcMain.handle('guest:status', (_e, name) => guestControl.getGuestControlStatus(name));
 ipcMain.handle('guest:toggle', (_e, name, feature, enabled) => guestControl.applyToggle(name, feature, enabled));
 ipcMain.handle('guest:applyRecommended', (_e, name) => guestControl.applyRecommended(name));
+
+// ---------- IPC: removable media (ISOs) ----------
+ipcMain.handle('media:list', (_e, name) => media.listMedia(name));
+ipcMain.handle('media:eject', (_e, name, target) => media.ejectMedia(name, target));
+ipcMain.handle('media:attachToSlot', (_e, name, target, isoPath) => media.attachToSlot(name, target, isoPath));
+ipcMain.handle('media:attachNew', (_e, name, isoPath) => media.attachNewCdrom(name, isoPath));
+ipcMain.handle('media:detach', (_e, name, target) => media.detachDrive(name, target));
 
 // ---------- IPC: winboat-style app picker backed by WinApps' own detection ----------
 ipcMain.handle('winappsApps:runDetection', async (event, scope) => {

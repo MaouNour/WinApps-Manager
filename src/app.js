@@ -403,6 +403,12 @@ async function refreshVmDetailsData(vmName, { full }) {
       entry.guestError = e.message;
     }
     entry.guestAt = Date.now();
+    try {
+      entry.mediaList = await window.api.media.list(vmName);
+      entry.mediaError = null;
+    } catch (e) {
+      entry.mediaError = e.message;
+    }
   }
 }
 
@@ -583,6 +589,73 @@ function renderVmDetails(vm) {
     guestBox.appendChild(h('div', { class: 'sub' }, 'Could not read guest status (VM must be running with the guest agent up): ' + entry.guestError));
   } else {
     guestBox.appendChild(h('div', { class: 'sub' }, 'Loading...'));
+  }
+
+  // --- Removable media (Windows ISO / VirtIO ISO / seed ISO / anything
+  // else attached, e.g. an Office ISO) - eject permanently once you're
+  // done installing, or swap a slot for a different ISO. Works whether the
+  // VM is running or shut off (reads/writes straight to the domain XML).
+  const mediaBox = h('div', {});
+  mediaBox.appendChild(h('h3', {}, 'Removable media (ISOs)'));
+  panel.appendChild(mediaBox);
+
+  async function pickAndAttach(target /* null = attach as a brand new drive */) {
+    const isoPath = await window.api.dialogs.pickIso({ title: 'Select ISO to attach' });
+    if (!isoPath) return;
+    try {
+      if (target) await window.api.media.attachToSlot(vm.name, target, isoPath);
+      else await window.api.media.attachNew(vm.name, isoPath);
+      toast(`Attached ${isoPath.split('/').pop()}.`);
+      await refreshVmDetailsData(vm.name, { full: true });
+      rerenderVmDetailsIfOpen(vm);
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+
+  if (entry.mediaList) {
+    const list = h('div', { class: 'check-list' });
+    for (const dev of entry.mediaList) {
+      const attached = !!dev.sourceFile;
+      list.appendChild(h('div', { class: 'check-item' }, [
+        h('div', {}, [
+          h('div', { class: 'label' }, `${dev.label} (${dev.target})`),
+          attached ? h('div', { class: 'sub' }, dev.sourceFile) : null
+        ]),
+        h('div', { class: 'row' }, [
+          h('span', { class: 'badge ' + (attached ? 'ok' : 'warn') }, attached ? 'attached' : 'empty'),
+          attached
+            ? h('button', {
+                class: 'btn small',
+                onclick: async (ev) => {
+                  ev.target.disabled = true;
+                  try {
+                    await window.api.media.eject(vm.name, dev.target);
+                    toast(`Ejected ${dev.label} - won\u2019t remount on reboot.`);
+                    await refreshVmDetailsData(vm.name, { full: true });
+                    rerenderVmDetailsIfOpen(vm);
+                  } catch (e) {
+                    toast(e.message, true);
+                  } finally {
+                    ev.target.disabled = false;
+                  }
+                }
+              }, 'Eject permanently')
+            : h('button', { class: 'btn small', onclick: () => pickAndAttach(dev.target) }, 'Attach ISO\u2026')
+        ])
+      ]));
+    }
+    mediaBox.appendChild(list);
+    mediaBox.appendChild(h('button', {
+      class: 'btn',
+      style: 'margin-top:10px',
+      onclick: () => pickAndAttach(null)
+    }, '+ Attach another ISO (new drive)\u2026'));
+    mediaBox.appendChild(h('div', { class: 'sub' }, 'Eject clears a drive permanently (live + on next boot) - reuse the freed slot for another ISO, e.g. Office, or leave it empty. Works with the VM running or shut off.'));
+  } else if (entry.mediaError) {
+    mediaBox.appendChild(h('div', { class: 'sub' }, 'Could not read attached media: ' + entry.mediaError));
+  } else {
+    mediaBox.appendChild(h('div', { class: 'sub' }, 'Loading...'));
   }
 
   return panel;
