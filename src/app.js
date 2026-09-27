@@ -605,6 +605,7 @@ function renderWizard(root) {
     password: '',
     memballoon: true,
     startOnBoot: true,
+    firmware: 'uefi',
     secureBoot: true,
     interactiveInstall: false,
     enableDefenderDisable: false,
@@ -700,8 +701,20 @@ function renderMediaCard(state) {
   card.appendChild(checkbox('Install Windows manually via the GUI (opens a viewer window; you click through Windows Setup yourself instead of a silent unattended install)', state, 'interactiveInstall'));
   card.appendChild(h('div', { class: 'sub' }, 'The libvirt XML is still built and optimized the same "winapps way" either way (VirtIO, TPM, Hyper-V enlightenments, etc.) - this only changes whether Setup answers itself or asks you. Once you reach the Windows desktop, open the "SEED" CD drive and run bootstrap.cmd as Administrator to finish the WinApps side (guest tools, guest agent, RDP registry keys, your chosen tweaks below).'));
 
-  card.appendChild(checkbox('Secure Boot', state, 'secureBoot'));
-  card.appendChild(h('div', { class: 'sub' }, 'Leave this on for official Microsoft ISOs. Turn it off for modified/community builds (Tiny10, ReviOS, AME, etc.) - their bootloaders usually are not Microsoft-signed, and Secure Boot rejecting an unsigned bootloader with nothing else to fall back to is the most common reason a VM looks "stuck" at a firmware boot-device screen.'));
+  const secureBootRow = h('div', {}, [
+    checkbox('Secure Boot', state, 'secureBoot'),
+    h('div', { class: 'sub' }, 'Leave this on for official Microsoft ISOs. Turn it off for modified/community builds (Tiny10, ReviOS, AME, etc.) - their bootloaders usually are not Microsoft-signed, and Secure Boot rejecting an unsigned bootloader with nothing else to fall back to is a common reason a VM looks "stuck" at a firmware boot-device screen.')
+  ]);
+
+  card.appendChild(field('Firmware', selectInput(state, 'firmware', [
+    ['uefi', 'UEFI (OVMF) - required for Windows 11 Secure Boot/TPM'],
+    ['bios', 'Legacy BIOS - simpler, more reliable boot; fine for Windows 10 and modified ISOs']
+  ], (val) => {
+    secureBootRow.style.display = val === 'bios' ? 'none' : '';
+  })));
+  secureBootRow.style.display = state.firmware === 'bios' ? 'none' : '';
+  card.appendChild(secureBootRow);
+  card.appendChild(h('div', { class: 'sub' }, 'Legacy BIOS skips OVMF/TPM/Secure Boot entirely and uses the classic "try the disk, fall through to the CD-ROM if empty" boot cascade - the same thing a stock virt-manager VM does. It can\'t run Windows 11\'s Secure Boot/TPM-gated install, but for Windows 10 or a modified ISO like Tiny10 it sidesteps OVMF\'s UEFI boot manager altogether and is the more reliable choice if you\'ve hit a "no bootable device" screen.'));
 
   const advancedBody = h('div', { style: 'display:none; margin-top:12px' });
   const advBtn = h('button', {

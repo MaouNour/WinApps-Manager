@@ -17,7 +17,15 @@ const { VM_IMAGES_DIR, SEED_ISO_DIR, VM_META_DIR, findOvmf } = require('./paths'
  *   memballoon: bool,
  *   enableDefenderDisable, enableUpdatesDisable, enableBloatDisable: bool,
  *   diskDir (optional override),
- *   secureBoot: bool (default true - turn off for modified/community ISOs
+ *   firmware: 'uefi' | 'bios' (default 'uefi'). 'bios' uses plain legacy
+ *     SeaBIOS - no OVMF, no TPM, no Secure Boot - with the classic
+ *     <os><boot dev="hd"/><boot dev="cdrom"/></os> cascade (same pattern a
+ *     stock virt-manager VM uses). Required for Windows 11's Secure
+ *     Boot/TPM requirement, so keep 'uefi' for that; for Windows 10 and
+ *     modified/community ISOs (Tiny10, ReviOS, AME, etc.) 'bios' sidesteps
+ *     OVMF's pickier UEFI boot-manager altogether and is the more reliable
+ *     choice.
+ *   secureBoot: bool (default true, only applies when firmware='uefi' -
  *     like Tiny10/ReviOS/AME that aren't Microsoft-signed; Secure Boot
  *     rejecting an unsigned bootloader with no other valid boot option is a
  *     common cause of the VM appearing stuck at a firmware "select boot
@@ -37,15 +45,19 @@ async function createVm(opts, onProgress = () => {}) {
     throw new Error('VM name must be alphanumeric (dashes/underscores ok), max 32 chars.');
   }
 
-  const ovmf = findOvmf();
-  if (!ovmf) throw new Error('No UEFI firmware (OVMF/edk2) found on this host.');
+  const firmware = opts.firmware === 'bios' ? 'bios' : 'uefi';
+  const ovmf = firmware === 'uefi' ? findOvmf() : null;
+  if (firmware === 'uefi' && !ovmf) throw new Error('No UEFI firmware (OVMF/edk2) found on this host.');
 
   const diskDir = opts.diskDir || VM_IMAGES_DIR;
   fs.mkdirSync(diskDir, { recursive: true });
   const diskPath = path.join(diskDir, `${opts.name}.qcow2`);
-  const nvramDir = path.join(diskDir, 'nvram');
-  fs.mkdirSync(nvramDir, { recursive: true });
-  const nvramPath = path.join(nvramDir, `${opts.name}_VARS.${ovmf.format === 'qcow2' ? 'qcow2' : 'fd'}`);
+  let nvramPath = null;
+  if (firmware === 'uefi') {
+    const nvramDir = path.join(diskDir, 'nvram');
+    fs.mkdirSync(nvramDir, { recursive: true });
+    nvramPath = path.join(nvramDir, `${opts.name}_VARS.${ovmf.format === 'qcow2' ? 'qcow2' : 'fd'}`);
+  }
 
   report('disk', 5, 'Creating virtual disk...');
   await run('qemu-img', ['create', '-f', 'qcow2', diskPath, `${opts.diskSizeGiB}G`]);
@@ -103,7 +115,8 @@ async function createVm(opts, onProgress = () => {}) {
     osId: guessLibosinfoId(opts.osTargetHint),
     cpuPinning: opts.cpuPinning || null,
     topology: opts.topology || null,
-    secureBoot: opts.secureBoot !== false
+    secureBoot: opts.secureBoot !== false,
+    firmware
   });
 
   const xmlPath = path.join(diskDir, `${opts.name}.xml`);
