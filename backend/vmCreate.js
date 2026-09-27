@@ -197,7 +197,9 @@ async function createVm(opts, onProgress = () => {}) {
       60,
       'Waiting for you to finish Windows Setup in the viewer window. Once you\'re at the desktop, open the ' +
         '"SEED" CD drive in Windows and run bootstrap.cmd as Administrator to finish the WinApps setup ' +
-        '(VirtIO guest tools, QEMU Guest Agent, RDP registry keys) - this step is picked up automatically below.'
+        '(VirtIO guest tools, QEMU Guest Agent, RDP registry keys) - it will reboot the VM once on its own ' +
+        'partway through (needed for the VirtIO driver to finish binding), then log back in automatically; ' +
+        'this whole thing is picked up automatically below once the agent responds.'
     );
     // Manual GUI installs are entirely user-paced (clicking through Setup,
     // then remembering to run bootstrap.cmd themselves) so we give this a

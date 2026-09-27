@@ -244,6 +244,21 @@ if exist "%~dp0NetProfileCleanup.ps1" (
 ${optional.join('\n')}
 
 echo [winapps-manager] First-boot setup complete.
+
+REM One reboot, always. The VirtIO guest-tools installer above (drivers +
+REM QEMU Guest Agent) reliably gets installed by /install /quiet /norestart,
+REM but in practice the virtio-serial driver doesn't finish *binding* to its
+REM device - and so the just-installed QEMU Guest Agent service has nothing
+REM to actually talk to the host over - until Windows re-enumerates it,
+REM which a plain driver install without a restart doesn't reliably trigger.
+REM A reboot forces that binding immediately and deterministically, instead
+REM of leaving the host-side poll to catch it only if/when Windows gets
+REM around to it on its own. AutoLogon's LogonCount is 3 (not 1) specifically
+REM so this reboot logs back in on its own with no user interaction needed;
+REM FirstLogonCommands themselves only ever run once, so this fires exactly
+REM one time.
+echo [winapps-manager] Rebooting once to finish binding VirtIO drivers / QEMU Guest Agent...
+shutdown /r /t 5 /f /c "winapps-manager: rebooting to finish VirtIO/QEMU Guest Agent setup"
 `;
 }
 
