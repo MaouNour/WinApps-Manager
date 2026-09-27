@@ -13,7 +13,7 @@ function randomMac() {
  *  disk itself is created separately), windowsIsoPath, virtioIsoPath, seedIsoPath,
  *  ovmf {code, vars, format}, nvramPath, network ('default'), memballoon (bool),
  *  cpuPinning: [{vcpu, cpuset}] | null, topology: {sockets,dies,clusters,cores,threads} | null,
- *  osVariant label metadata (win10/win11), mac (optional)
+ *  osVariant label metadata (win10/win11), mac (optional), secureBoot (bool, default true)
  */
 function buildDomainXml(opts) {
   const {
@@ -33,7 +33,8 @@ function buildDomainXml(opts) {
     topology = null,
     osId = 'http://microsoft.com/win/11',
     mac = randomMac(),
-    uuid = crypto.randomUUID()
+    uuid = crypto.randomUUID(),
+    secureBoot = true
   } = opts;
 
   const memoryKiB = memoryMiB * 1024;
@@ -61,9 +62,20 @@ function buildDomainXml(opts) {
 
   // Extra removable-media entries: Windows ISO, VirtIO driver ISO, and our
   // generated autounattend/oem seed ISO (used only during first boot).
+  //
+  // Only the Windows ISO ever gets a <boot order=".."/>. With three cdroms
+  // attached, letting OVMF pick "the" cdrom from the old generic
+  // <os><boot dev="cdrom"/></os> list is ambiguous - depending on the OVMF
+  // build/version this can make the firmware fall back to its interactive
+  // "Boot Manager" screen (looks like the VM is frozen "waiting to select a
+  // boot device", especially headless with no one there to press a key).
+  // Giving exactly one specific device an explicit boot order removes that
+  // ambiguity entirely. Per libvirt's schema, per-device <boot order=".."/>
+  // and the old <os><boot dev=".."/></os> list are mutually exclusive, so
+  // callers must not also emit the <os>-level list (see below).
   const cdroms = [];
   if (windowsIsoPath) {
-    cdroms.push(cdromXml('sdb', windowsIsoPath));
+    cdroms.push(cdromXml('sdb', windowsIsoPath, 1));
   }
   if (virtioIsoPath) {
     cdroms.push(cdromXml('sdc', virtioIsoPath));
@@ -86,13 +98,12 @@ function buildDomainXml(opts) {
 ${cputuneXml}  <os firmware="efi">
     <type arch="x86_64" machine="pc-q35-8.1">hvm</type>
     <firmware>
-      <feature enabled="yes" name="enrolled-keys"/>
-      <feature enabled="yes" name="secure-boot"/>
+      <feature enabled="${secureBoot ? 'yes' : 'no'}" name="enrolled-keys"/>
+      <feature enabled="${secureBoot ? 'yes' : 'no'}" name="secure-boot"/>
     </firmware>
-    <loader readonly="yes" secure="yes" type="pflash" format="${ovmf.format}">${ovmf.code}</loader>
+    <loader readonly="yes" secure="${secureBoot ? 'yes' : 'no'}" type="pflash" format="${ovmf.format}">${ovmf.code}</loader>
     <nvram template="${ovmf.vars}" format="${ovmf.format === 'qcow2' ? 'qcow2' : 'raw'}">${nvramPath}</nvram>
-    <boot dev="hd"/>
-    <boot dev="cdrom"/>
+    <bootmenu enable="no"/>
   </os>
   <features>
     <acpi/>
@@ -136,6 +147,7 @@ ${cputuneXml}  <os firmware="efi">
       <driver name="qemu" type="qcow2" discard="unmap"/>
       <source file="${diskPath}"/>
       <target dev="vda" bus="virtio"/>
+      <boot order="2"/>
     </disk>
 ${cdroms.join('\n')}
     <controller type="usb" index="0" model="qemu-xhci"/>
@@ -184,12 +196,13 @@ ${cdroms.join('\n')}
 `;
 }
 
-function cdromXml(dev, sourceFile) {
+function cdromXml(dev, sourceFile, bootOrder = null) {
   return `    <disk type="file" device="cdrom">
       <driver name="qemu" type="raw"/>
       <source file="${sourceFile}"/>
       <target dev="${dev}" bus="sata"/>
       <readonly/>
+      ${bootOrder ? `<boot order="${bootOrder}"/>` : ''}
     </disk>`;
 }
 

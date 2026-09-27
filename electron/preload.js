@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('api', {
     shutdown: (name) => ipcRenderer.invoke('vm:shutdown', name),
     kill: (name) => ipcRenderer.invoke('vm:kill', name),
     reset: (name) => ipcRenderer.invoke('vm:reset', name),
+    openViewer: (name) => ipcRenderer.invoke('vm:openViewer', name),
     delete: (name, opts) => ipcRenderer.invoke('vm:delete', name, opts)
   },
   net: {

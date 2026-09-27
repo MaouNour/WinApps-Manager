@@ -2,7 +2,8 @@
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
-const { run } = require('./exec');
+const { spawn } = require('child_process');
+const { run, which } = require('./exec');
 const { listVmStates } = require('./vmStats');
 
 // One `virsh domstats` call covers every domain's name + state at once,
@@ -32,6 +33,30 @@ async function killVm(name) {
 // Equivalent to: alias winvm-restart="virsh reset RDPWindows"  (hard reset, like the power button)
 async function resetVm(name) {
   return run('virsh', ['reset', name]);
+}
+
+/**
+ * Opens a graphical console (SPICE, via the domain's own <graphics> device)
+ * for a running VM. Used by the "install Windows via the GUI" flow so the
+ * user actually has a window to click through Windows Setup in, and is also
+ * exposed as a general "Open Console" action from the dashboard.
+ *
+ * Launched detached/unref'd - it's a GUI window with its own independent
+ * lifetime, we should never await it or have its exit affect anything else.
+ */
+async function openViewer(name) {
+  const bin = (await which('virt-viewer')) || (await which('remote-viewer'));
+  if (!bin) {
+    throw new Error(
+      'No SPICE viewer found (looked for virt-viewer, remote-viewer). Install virt-viewer, or connect manually with a SPICE client pointed at this VM.'
+    );
+  }
+  // virt-viewer resolves a libvirt domain name straight to its graphics
+  // device itself - no need to go dig a spice:// URI out of the XML.
+  const args = ['--connect', 'qemu:///system', '--wait', name];
+  const child = spawn(bin, args, { detached: true, stdio: 'ignore' });
+  child.unref();
+  return { launched: bin };
 }
 
 /**
@@ -185,4 +210,4 @@ function patchXmlForOptimizations(xml) {
   return out;
 }
 
-module.exports = { listVms, startVm, shutdownVm, killVm, resetVm, deleteVm, getVmConfig, applyLibvirtOptimizations };
+module.exports = { listVms, startVm, shutdownVm, killVm, resetVm, openViewer, deleteVm, getVmConfig, applyLibvirtOptimizations };

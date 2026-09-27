@@ -280,6 +280,7 @@ function vmRow(vm) {
   actions.appendChild(mkBtn('Shutdown', () => window.api.vm.shutdown(vm.name)));
   actions.appendChild(mkBtn('Kill', () => window.api.vm.kill(vm.name), 'danger'));
   actions.appendChild(mkBtn('Restart', () => window.api.vm.reset(vm.name)));
+  actions.appendChild(mkBtn('Open Console', () => window.api.vm.openViewer(vm.name)));
   actions.appendChild(
     mkBtn(netDisconnected ? 'Reconnect network' : 'Disconnect network', () =>
       netDisconnected ? window.api.net.reconnect('default') : window.api.net.disconnect('default')
@@ -604,6 +605,8 @@ function renderWizard(root) {
     password: '',
     memballoon: true,
     startOnBoot: true,
+    secureBoot: true,
+    interactiveInstall: false,
     enableDefenderDisable: false,
     enableUpdatesDisable: false,
     enableFirewallDisable: false,
@@ -674,7 +677,9 @@ function renderWizard(root) {
     ]),
     h('div', { class: 'card', id: 'wizard-progress-card' }, [
       h('h2', {}, 'Create'),
-      h('div', { class: 'sub' }, 'The VM boots with no window shown - just watch progress here. Windows ISO / VirtIO ISO download (if needed), silent install, and first-boot setup all happen automatically; it reaches 100% once Windows is installed and the guest agent responds.'),
+      h('div', { class: 'sub' }, state.interactiveInstall
+        ? 'A viewer window will open once the VM starts, for you to run Windows Setup yourself. Windows ISO / VirtIO ISO download (if needed) still happen automatically; the bar reaches 100% once you\'ve finished Setup, run bootstrap.cmd, and the guest agent responds.'
+        : 'The VM boots with no window shown - just watch progress here. Windows ISO / VirtIO ISO download (if needed), silent install, and first-boot setup all happen automatically; it reaches 100% once Windows is installed and the guest agent responds.'),
       h('div', { id: 'progress-area' }),
       h('button', {
         class: 'btn primary',
@@ -691,6 +696,12 @@ function renderMediaCard(state) {
     h('h2', {}, 'Install media'),
     h('div', { class: 'sub' }, "By default nothing to pick: the Windows ISO is fetched straight from Microsoft's own download servers for the edition you chose above, and the VirtIO drivers ISO from the official Fedora mirror - both cached after the first VM, so later VMs don't re-download. Expand Advanced only if you already have specific ISO files you want to use instead.")
   ]);
+
+  card.appendChild(checkbox('Install Windows manually via the GUI (opens a viewer window; you click through Windows Setup yourself instead of a silent unattended install)', state, 'interactiveInstall'));
+  card.appendChild(h('div', { class: 'sub' }, 'The libvirt XML is still built and optimized the same "winapps way" either way (VirtIO, TPM, Hyper-V enlightenments, etc.) - this only changes whether Setup answers itself or asks you. Once you reach the Windows desktop, open the "SEED" CD drive and run bootstrap.cmd as Administrator to finish the WinApps side (guest tools, guest agent, RDP registry keys, your chosen tweaks below).'));
+
+  card.appendChild(checkbox('Secure Boot', state, 'secureBoot'));
+  card.appendChild(h('div', { class: 'sub' }, 'Leave this on for official Microsoft ISOs. Turn it off for modified/community builds (Tiny10, ReviOS, AME, etc.) - their bootloaders usually are not Microsoft-signed, and Secure Boot rejecting an unsigned bootloader with nothing else to fall back to is the most common reason a VM looks "stuck" at a firmware boot-device screen.'));
 
   const advancedBody = h('div', { style: 'display:none; margin-top:12px' });
   const advBtn = h('button', {

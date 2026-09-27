@@ -123,6 +123,7 @@ ipcMain.handle('vm:start', (_e, name) => vmctl.startVm(name));
 ipcMain.handle('vm:shutdown', (_e, name) => vmctl.shutdownVm(name));
 ipcMain.handle('vm:kill', (_e, name) => vmctl.killVm(name));
 ipcMain.handle('vm:reset', (_e, name) => vmctl.resetVm(name));
+ipcMain.handle('vm:openViewer', (_e, name) => vmctl.openViewer(name));
 ipcMain.handle('vm:delete', (_e, name, opts) => vmctl.deleteVm(name, opts));
 
 // ---------- IPC: per-VM network toggle ----------

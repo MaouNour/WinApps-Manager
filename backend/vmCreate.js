@@ -5,6 +5,7 @@ const { run } = require('./exec');
 const { buildDomainXml } = require('./libvirtXml');
 const { buildSeedIso } = require('./unattend');
 const { ensureVirtioIso, ensureWindowsIso } = require('./isoAcquire');
+const { openViewer } = require('./vmctl');
 const { VM_IMAGES_DIR, SEED_ISO_DIR, VM_META_DIR, findOvmf } = require('./paths');
 
 /**
@@ -15,7 +16,17 @@ const { VM_IMAGES_DIR, SEED_ISO_DIR, VM_META_DIR, findOvmf } = require('./paths'
  *   osTargetHint: 'win10'|'win11',
  *   memballoon: bool,
  *   enableDefenderDisable, enableUpdatesDisable, enableBloatDisable: bool,
- *   diskDir (optional override)
+ *   diskDir (optional override),
+ *   secureBoot: bool (default true - turn off for modified/community ISOs
+ *     like Tiny10/ReviOS/AME that aren't Microsoft-signed; Secure Boot
+ *     rejecting an unsigned bootloader with no other valid boot option is a
+ *     common cause of the VM appearing stuck at a firmware "select boot
+ *     device" screen),
+ *   interactiveInstall: bool (default false - "install Windows via the
+ *     GUI". The libvirt XML is still built and optimized exactly the same
+ *     "winapps way" as the silent path; the only difference is we skip
+ *     autounattend.xml so Windows Setup asks its normal on-screen questions,
+ *     and we open a SPICE viewer window instead of polling headlessly.)
  * }
  * onProgress(stage, pct, message)
  */
@@ -51,7 +62,15 @@ async function createVm(opts, onProgress = () => {}) {
     virtioIsoPath = await ensureVirtioIso((p) => report('virtio-iso', 15 + p.pct * 0.05, p.message));
   }
 
-  report('seed', 22, 'Building unattended-install answer file + OEM scripts...');
+  const interactiveInstall = !!opts.interactiveInstall;
+
+  report(
+    'seed',
+    22,
+    interactiveInstall
+      ? 'Building OEM/first-boot helper scripts (no autounattend - Setup will ask you directly)...'
+      : 'Building unattended-install answer file + OEM scripts...'
+  );
   const seedIsoPath = await buildSeedIso(
     {
       name: opts.name,
@@ -59,6 +78,7 @@ async function createVm(opts, onProgress = () => {}) {
       password: opts.password,
       computerName: opts.name.toUpperCase().slice(0, 15),
       osTargetHint: opts.osTargetHint,
+      skipAutounattend: interactiveInstall,
       enableDefenderDisable: !!opts.enableDefenderDisable,
       enableUpdatesDisable: !!opts.enableUpdatesDisable,
       enableFirewallDisable: !!opts.enableFirewallDisable,
@@ -82,7 +102,8 @@ async function createVm(opts, onProgress = () => {}) {
     memballoon: opts.memballoon !== false,
     osId: guessLibosinfoId(opts.osTargetHint),
     cpuPinning: opts.cpuPinning || null,
-    topology: opts.topology || null
+    topology: opts.topology || null,
+    secureBoot: opts.secureBoot !== false
   });
 
   const xmlPath = path.join(diskDir, `${opts.name}.xml`);
@@ -95,8 +116,24 @@ async function createVm(opts, onProgress = () => {}) {
     await run('virsh', ['autostart', opts.name], { allowFail: true });
   }
 
-  report('boot', 55, 'Starting the VM and beginning the silent Windows install...');
+  report(
+    'boot',
+    55,
+    interactiveInstall
+      ? 'Starting the VM - a viewer window will open for you to run Windows Setup...'
+      : 'Starting the VM and beginning the silent Windows install...'
+  );
   await run('virsh', ['start', opts.name]);
+
+  if (interactiveInstall) {
+    try {
+      await openViewer(opts.name);
+    } catch (e) {
+      // Non-fatal: the VM is up either way, the user can still open a
+      // viewer manually (virt-manager, or the Dashboard's Open Console).
+      report('boot', 57, `Could not auto-open a viewer (${e.message}). Open one manually to continue Windows Setup.`);
+    }
+  }
 
   // Persist metadata about this VM for the manager UI (which ISOs/user were used, etc.)
   fs.mkdirSync(VM_META_DIR, { recursive: true });
@@ -121,8 +158,22 @@ async function createVm(opts, onProgress = () => {}) {
     )
   );
 
-  report('installing', 60, 'Windows is installing unattended in the background (no window shown).');
-  await pollUntilAgentReady(opts.name, report);
+  if (interactiveInstall) {
+    report(
+      'installing',
+      60,
+      'Waiting for you to finish Windows Setup in the viewer window. Once you\'re at the desktop, open the ' +
+        '"SEED" CD drive in Windows and run bootstrap.cmd as Administrator to finish the WinApps setup ' +
+        '(VirtIO guest tools, QEMU Guest Agent, RDP registry keys) - this step is picked up automatically below.'
+    );
+    // Manual GUI installs are entirely user-paced (clicking through Setup,
+    // then remembering to run bootstrap.cmd themselves) so we give this a
+    // much longer window than the silent path before giving up.
+    await pollUntilAgentReady(opts.name, report, 3 * 60 * 60 * 1000);
+  } else {
+    report('installing', 60, 'Windows is installing unattended in the background (no window shown).');
+    await pollUntilAgentReady(opts.name, report);
+  }
 
   report('done', 100, 'Windows is installed and QEMU Guest Agent is responding. VM is ready.');
   return { name: opts.name, diskPath, xmlPath };
@@ -137,9 +188,11 @@ async function pollUntilAgentReady(name, report, timeoutMs = 45 * 60 * 1000) {
     const elapsedMin = Math.round((Date.now() - start) / 60000);
     // Progress is a rough estimate (silent installs give us no hard signal
     // pre-agent) - we creep the bar up over ~20 minutes, the typical time,
-    // and jump to 'done' the instant the agent actually answers.
-    lastPct = Math.min(95, 60 + elapsedMin * 1.5);
-    report('installing', lastPct, `Still installing/first-boot configuring... (${elapsedMin} min elapsed)`);
+    // and jump to 'done' the instant the agent actually answers. Capped at
+    // a lower ceiling since this same creep also covers the much longer,
+    // user-paced interactive-install timeout.
+    lastPct = Math.min(95, 60 + elapsedMin * 0.5);
+    report('installing', lastPct, `Still waiting on Windows/QEMU Guest Agent... (${elapsedMin} min elapsed)`);
     try {
       const { stdout } = await run(
         'virsh',
@@ -153,7 +206,7 @@ async function pollUntilAgentReady(name, report, timeoutMs = 45 * 60 * 1000) {
       // agent not up yet, keep polling
     }
   }
-  throw new Error('Timed out waiting for QEMU Guest Agent to respond inside the 45-minute window. The install may still be running - check with `virsh domstate ' + name + '` and a viewer if needed.');
+  throw new Error('Timed out waiting for QEMU Guest Agent to respond inside the ' + Math.round(timeoutMs / 60000) + '-minute window. The install may still be running - check with `virsh domstate ' + name + '` and a viewer if needed.');
 }
 
 // Purely cosmetic libosinfo metadata (drives the icon/name virt-manager

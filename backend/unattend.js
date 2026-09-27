@@ -235,7 +235,16 @@ async function buildSeedIso(vmOpts, onLine) {
   fs.rmSync(stage, { recursive: true, force: true });
   fs.mkdirSync(stage, { recursive: true });
 
-  fs.writeFileSync(path.join(stage, 'autounattend.xml'), buildAutounattendXml(vmOpts));
+  // Manual/"GUI" installs (vmOpts.skipAutounattend) intentionally omit
+  // autounattend.xml so Windows Setup boots straight into its normal
+  // interactive wizard (language/edition/license key/partitioning/account,
+  // all asked on-screen) instead of answering itself. bootstrap.cmd + the
+  // OEM files still go on the disc so the user can finish the WinApps side
+  // (VirtIO guest tools/guest agent, RDPApps.reg, the optional tweaks) by
+  // running it themselves once Windows is up, from the "SEED" CD drive.
+  if (!vmOpts.skipAutounattend) {
+    fs.writeFileSync(path.join(stage, 'autounattend.xml'), buildAutounattendXml(vmOpts));
+  }
   fs.writeFileSync(path.join(stage, 'bootstrap.cmd'), buildBootstrapCmd(vmOpts));
   fs.writeFileSync(path.join(stage, 'disable-defender.ps1'), psDisableDefender());
   fs.writeFileSync(path.join(stage, 'disable-updates.ps1'), psDisableUpdates());
