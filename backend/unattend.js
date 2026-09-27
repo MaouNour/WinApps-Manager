@@ -205,6 +205,21 @@ echo [winapps-manager] Running first-boot setup...
 :: Locate the VirtIO driver ISO (guest tools installer) among optical drives.
 for %%d in (D E F G H) do (
   if exist %%d:\\virtio-win-guest-tools.exe (
+    REM pnputil-based driver staging comes FIRST and is the primary path
+    REM for getting the drivers actually installed. The guest-tools Burn
+    REM bundle below is known - repeatedly, in the wild, not just here -
+    REM to be unreliable about which drivers its /quiet mode actually
+    REM installs; NetKVM (the network adapter) is the one that most
+    REM commonly gets silently skipped even though the disk/serial/balloon
+    REM drivers install fine, and even though a full interactive
+    REM click-through of the same installer includes it. pnputil sidesteps
+    REM that bundle/MSI feature-selection logic entirely: it stages every
+    REM signed .inf found anywhere under the drive (NetKVM, viostor,
+    REM vioscsi, Balloon, vioserial, qxl, ...) and /install binds each one
+    REM immediately to whatever matching hardware is present, with no GUI
+    REM and no dependence on the bundle's own default feature set.
+    echo [winapps-manager] Staging all VirtIO driver INFs via pnputil (NetKVM, storage, balloon, serial, ...)...
+    pnputil /add-driver %%d:\\*.inf /subdirs /install
     echo [winapps-manager] Installing VirtIO guest tools + QEMU Guest Agent (silent)...
     %%d:\\virtio-win-guest-tools.exe /install /quiet /norestart ACCEPTEULA=1
     REM Belt-and-suspenders: under fully silent/quiet mode this Burn bundle
